@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { startServer, setApiKey, hasApiKey } from '../server/app-server.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const APP_NAME = 'Micro Assembly';
+const APP_NAME = 'Jin-micro';
 app.setName(APP_NAME);
 // 사용자 데이터 폴더는 jin-3d(Jin-3D)와 분리한다 — API 키·녹화·에피소드를 따로 보관한다
-app.setPath('userData', path.join(app.getPath('appData'), 'Micro-Assembly'));
+app.setPath('userData', path.join(app.getPath('appData'), 'Jin-micro'));
 
 const keyFile = () => path.join(app.getPath('userData'), 'anthropic-key.bin');
 let win = null, origin = null, keySource = null;
