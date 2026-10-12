@@ -56,6 +56,8 @@ app.whenReady().then(async () => {
   await testPopup('5G 카드', () => clickId('btnNet5g'), D('#net5gCard'), () => clickId('btnNet5g'));
   await testPopup('5G 기지국 창', () => js(`window.__twin.openGnb('gNB-01')`), D('#gnbPanel'), () => js(`document.getElementById('gnbClose').click()`));
   await testPopup('오케스트레이터 (인시던트 흐름)', () => clickId('btnOrch'), D('#orchPanel'), async () => {});
+  await testPopup('오케스트레이터 (공정별 제어 흐름도)', () => js(`document.querySelector('#orchPanel [data-tab=ctl]').click()`), D('#orchPanel'), async () => {});
+  await testPopup('오케스트레이터 (흐름 분석)', () => js(`document.querySelector('#orchPanel [data-cview=analysis]').click()`), D('#orchPanel'), () => js(`document.querySelector('#orchPanel [data-cview=steps]').click()`));
   await testPopup('오케스트레이터 (명령 콘솔)', () => js(`document.querySelector('#orchPanel [data-tab=cmd]').click()`), D('#orchPanel'), async () => { await js(`document.querySelector('#orchPanel [data-tab=flow]').click()`); await clickId('btnOrch'); });
   await testPopup('진화 컨셉', () => clickId('btnConcept'), D('#concept'), () => clickId('closeConcept'));
   await testPopup('3단계 8시간 비교', async () => { await clickId('btnCompare'); await wait(1500); }, D('#compare'), () => clickId('closeCompare'));
