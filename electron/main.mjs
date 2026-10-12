@@ -115,6 +115,9 @@ app.disableDomainBlockingFor3DAPIs();
 app.on('child-process-gone', (e, d) => { if (d.type === 'GPU') console.warn(`[피지컬AI 실증 메타팩토리] GPU 프로세스 종료 (${d.reason}) — 재시작`); });
 
 app.whenReady().then(async () => {
+  // 개발 실행(npm run app)에서도 Dock에 Jin-micro 아이콘 — 패키징한 앱은 build/icon.icns가 들어간다
+  const devIcon = path.join(HERE, '..', 'build', 'icon.png');
+  if (!app.isPackaged && process.platform === 'darwin' && fs.existsSync(devIcon)) app.dock?.setIcon(devIcon);
   loadStoredKey();
   buildMenu();
   app.setAboutPanelOptions({
