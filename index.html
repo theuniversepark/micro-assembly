@@ -6,9 +6,54 @@
   <title>피지컬AI 실증 메타팩토리</title>
   <link rel="icon" type="image/png" href="build/icon.png" />
   <link rel="apple-touch-icon" href="build/icon.png" />
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=62e9577795" />
   <script type="importmap">
-    { "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+    { "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/",
+      "./js/aas.js": "./js/aas.js?v=c87fdf8b09",
+      "./js/aasx.js": "./js/aasx.js?v=c4f582af4b",
+      "./js/agent.js": "./js/agent.js?v=4448672964",
+      "./js/agentinfo.js": "./js/agentinfo.js?v=4ad2a83099",
+      "./js/aios.js": "./js/aios.js?v=fc8a408f90",
+      "./js/assets.js": "./js/assets.js?v=ba67fa27c9",
+      "./js/attachments.js": "./js/attachments.js?v=0c8d1872e6",
+      "./js/blender.js": "./js/blender.js?v=570767528a",
+      "./js/cctv.js": "./js/cctv.js?v=c5ca19ab23",
+      "./js/cctvrec.js": "./js/cctvrec.js?v=d7fab64cd9",
+      "./js/cctvview.js": "./js/cctvview.js?v=c2d55bd98c",
+      "./js/commands.js": "./js/commands.js?v=9638670223",
+      "./js/concept.js": "./js/concept.js?v=cd3a7bcc78",
+      "./js/datahub.js": "./js/datahub.js?v=7dfeea2b43",
+      "./js/designer.js": "./js/designer.js?v=9382377885",
+      "./js/dialog.js": "./js/dialog.js?v=04a9e7684d",
+      "./js/drone.js": "./js/drone.js?v=e1d350e3bd",
+      "./js/fac.js": "./js/fac.js?v=819e635268",
+      "./js/factory.js": "./js/factory.js?v=a57bf8bfbf",
+      "./js/fleet.js": "./js/fleet.js?v=c21fee874a",
+      "./js/gate.js": "./js/gate.js?v=9bd5290ad3",
+      "./js/gateview.js": "./js/gateview.js?v=80968cb5a9",
+      "./js/impact.js": "./js/impact.js?v=79722d8e32",
+      "./js/impactview.js": "./js/impactview.js?v=dc79c5abfe",
+      "./js/line.js": "./js/line.js?v=3cc3ad6959",
+      "./js/llm.js": "./js/llm.js?v=74f579670f",
+      "./js/main.js": "./js/main.js?v=338b3d07e3",
+      "./js/multiagent.js": "./js/multiagent.js?v=19242665ab",
+      "./js/net5g.js": "./js/net5g.js?v=1fb8973a16",
+      "./js/orchestrator.js": "./js/orchestrator.js?v=f6ada13f17",
+      "./js/orchview.js": "./js/orchview.js?v=d18b62be70",
+      "./js/pcap.js": "./js/pcap.js?v=4a2af6693a",
+      "./js/receiving.js": "./js/receiving.js?v=87b4f50b04",
+      "./js/robotcam.js": "./js/robotcam.js?v=41a8bcaa94",
+      "./js/robotrec.js": "./js/robotrec.js?v=f4c253da35",
+      "./js/security.js": "./js/security.js?v=8be34bc31e",
+      "./js/shipping.js": "./js/shipping.js?v=0c7ae71525",
+      "./js/sim.js": "./js/sim.js?v=9fa6e42d22",
+      "./js/stepflow.js": "./js/stepflow.js?v=7dea5f8f5b",
+      "./js/telemetry.js": "./js/telemetry.js?v=ca169c3ccf",
+      "./js/ui.js": "./js/ui.js?v=fe91a82eec",
+      "./js/vla.js": "./js/vla.js?v=d0f985ee62"
+    } }
   </script>
 </head>
 <body data-mode="smart">
@@ -251,6 +296,6 @@
     // GitHub Pages 같은 정적 호스팅: 서버(Claude·MQTT)가 없으므로 호출하지 않는다. 파일 저장은 그대로 된다.
     if (/\.github\.io$/.test(location.hostname)) window.JIN3D_NO_SERVER = true;
   </script>
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="js/main.js?v=338b3d07e3"></script>
 </body>
 </html>
