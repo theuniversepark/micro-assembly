@@ -36,11 +36,11 @@ const TYPE_PRIO = { field: 2, equipment: 3, supply: 4, parts: 4, command: 4, qua
 export const prioOf = (inc) => inc?.prio ?? TYPE_PRIO[inc?.type] ?? 4;
 
 // 제어·이벤트 흐름 분류 — 흐름 기록·집계는 공정·운영 흐름 분석(제어 흐름 탭)에 쓴다.
-// 계층을 건너는 흐름은 방향으로 나눈다: 위로(현장 → 셀 → 오케스트레이터 → ERP) 올라가는 것은 이벤트(감지·보고·결과 통보),
+// 계층을 건너는 흐름은 방향으로 나눈다: 위로(현장 → 셀 → 오케스트레이터 → FAC) 올라가는 것은 이벤트(감지·보고·결과 통보),
 // 아래로 내려가는 것은 제어(명령). 같은 계층 안의 흐름은 단계 종류로 나눈다: 자체 조치·명령·조치는 제어, 판단·완료 확인은 판단
 export const FLOW_CLASS = { detect: 'event', report: 'event', notify: 'event', self: 'control', command: 'control', act: 'control', decide: 'decision', done: 'decision' };
 export const FLOW_CLASS_LABEL = { event: '이벤트', control: '제어', decision: '판단' };
-const LEVEL = { erp: 0, orch: 1, cell: 2, exec: 2, field: 3 };
+const LEVEL = { fac: 0, orch: 1, cell: 2, exec: 2, field: 3 };
 export const flowClass = (from, to, kind) => (from && LEVEL[from] !== LEVEL[to] ? (LEVEL[to] < LEVEL[from] ? 'event' : 'control') : FLOW_CLASS[kind] ?? 'control');
 
 export class Orchestrator {

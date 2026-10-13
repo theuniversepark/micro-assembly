@@ -1,6 +1,6 @@
 // 오케스트레이터 인시던트 흐름 도표 — 인시던트 목록 + 스윔레인 흐름도(현장 감지 · 셀 컨트롤러 · 공장 오케스트레이터 · 실행 자원).
 // 단계(감지 → 셀 자체 조치 → 상위 보고 → 판단 → 명령 → 조치 → 완료 확인)를 시각과 함께 실시간으로 그린다.
-// 제어 흐름 탭은 공정·운영 흐름 분석용이다: 계층(ERP · 오케스트레이터 · 셀 컨트롤러 · 실행 자원 · 현장) 사이를 오간 제어·이벤트 흐름의
+// 제어 흐름 탭은 공정·운영 흐름 분석용이다: 계층(FAC · 오케스트레이터 · 셀 컨트롤러 · 실행 자원 · 현장) 사이를 오간 제어·이벤트 흐름의
 // 누적 건수·평균 지연, 공정 흐름(투입 → 셀 → 적재)의 실시간 상태, 인시던트 종류별 단계 지연, 제어·이벤트 흐름 기록을 보여 준다.
 // 명령 콘솔 탭에서는 상위 계층이 셀 현장으로 긴급·제어 명령을 보내고, 셀별 명령 상태와 명령 이력(전송 → ACK → 완료)을 본다.
 import { LANES, STAGES, INCIDENT_TYPES, PRIORITY, prioOf, FLOW_CLASS_LABEL } from './orchestrator.js';
@@ -19,7 +19,7 @@ const KIND = {
 const TABS = { flow: ['인시던트 흐름', '인시던트 보고 · 판단 · 명령 · 조치 흐름'], ctl: ['제어 흐름', '공정·운영 제어 흐름 · 이벤트 흐름 분석'], cmd: ['명령 콘솔', '상위 계층 → 셀 현장 긴급·제어 명령'] };
 const FILTERS = { all: '전체', control: '제어', event: '이벤트' };
 const CLS_COLOR = { control: 'var(--o-command)', event: 'var(--o-report)', decision: 'var(--o-decide)' };
-const laneLabel = (k) => (k === 'erp' ? 'ERP' : LANES.find((l) => l.key === k)?.label ?? k);
+const laneLabel = (k) => (k === 'fac' ? 'FAC' : LANES.find((l) => l.key === k)?.label ?? k);
 // 공정 흐름 상자 색 (셀 상태)
 const ST_TONE = { BUSY: 'good', IDLE: 'idle', STARVED: 'idle', NOAMR: 'warn', BLOCKED: 'warn', FULL: 'warn', HOLD: 'warn', PSTOP: 'warn', CSTOP: 'warn', REFILL: 'info', MAINT: 'info', CHECK: 'info', DOWN: 'bad', ESTOP: 'bad', NOPARTS: 'bad', OFF: 'idle' };
 const cut = (t, n) => { const w = [...String(t)]; return w.length > n ? w.slice(0, n - 1).join('') + '…' : t; };
@@ -213,18 +213,18 @@ export class OrchView {
     }
   }
 
-  // 계층 흐름도: 노드 = ERP · 오케스트레이터 · 셀 컨트롤러 · 실행 자원 · 현장 감지, 선 = 레인 사이 흐름(제어 실선 · 이벤트 점선 · 판단 보라)
+  // 계층 흐름도: 노드 = FAC(업무 기록) · 오케스트레이터 · 셀 컨트롤러 · 실행 자원 · 현장 감지, 선 = 레인 사이 흐름(제어 실선 · 이벤트 점선 · 판단 보라)
   layerSvg() {
     const s = this.sim, o = s.orch, f = this.flt, W = 640, H = 330, NW = 184, NH = 48;
-    const erp = s.erp?.on;
+    const fac = s.fac?.on;
     const N = {
-      erp: { x: 320, y: 30, label: 'ERP (Odoo)', sub: '발주·재고·설비보전' },
+      fac: { x: 320, y: 30, label: 'FAC (FACOS 업무 기록)', sub: '발주·재고·설비보전' },
       orch: { x: 320, y: 120, label: '공장 오케스트레이터', sub: o.name },
       cell: { x: 104, y: 210, label: '셀 컨트롤러', sub: '셀 자체 조치' },
       exec: { x: 536, y: 210, label: '실행 자원', sub: '정비·AGV·휴머노이드·사족보행' },
       field: { x: 320, y: 296, label: '현장 감지', sub: '로봇·센서·카메라' },
     };
-    if (!erp) delete N.erp;
+    if (!fac) delete N.fac;
     const flows = Object.values(o.flows), inner = {}, origin = {};
     for (const x of flows) {
       if (!x.from) (origin[x.to] ??= 0, origin[x.to] += x.n);
@@ -244,10 +244,10 @@ export class OrchView {
         full: `${cs.map(([c, n]) => `${FLOW_CLASS_LABEL[c]} ${n}`).join(' · ')} · 평균 지연 ${(e.dt / e.n).toFixed(1)}초`,
         tip: Object.entries(e.kinds).map(([k, n]) => `${KIND[k]?.label ?? k} ${n}`).join(' · ') };
     });
-    if (erp) {
-      const q = s.erp.seq;
-      edges.push({ from: 'orch', to: 'erp', main: 'event', has: ['event'], n: q.mr + q.mrp + q.in, label: `정비요청 ${q.mr} · 생산입고 ${q.mrp} · 입고 ${q.in}`, tip: '공장 → ERP: 정비요청·생산 입고·입고 완료 기록' });
-      edges.push({ from: 'erp', to: 'orch', main: 'control', has: ['control'], n: q.po + q.int + q.out, label: `발주 ${q.po} · 출고 ${q.int} · 출하 ${q.out}`, tip: 'ERP → 공장: 발주·창고 출고·출하 지시' });
+    if (fac) {
+      const q = s.fac.seq;
+      edges.push({ from: 'orch', to: 'fac', main: 'event', has: ['event'], n: q.mr + q.mrp + q.in, label: `정비요청 ${q.mr} · 생산입고 ${q.mrp} · 입고 ${q.in}`, tip: '공장 → FAC: 정비요청·생산 입고·입고 완료 기록' });
+      edges.push({ from: 'fac', to: 'orch', main: 'control', has: ['control'], n: q.po + q.int + q.out, label: `발주 ${q.po} · 출고 ${q.int} · 출하 ${q.out}`, tip: 'FAC → 공장: 발주·창고 출고·출하 지시' });
     }
     const max = Math.max(1, ...edges.map((e) => e.n));
     const clip = (a, dx, dy) => { const t = Math.min(NW / 2 / Math.abs(dx || 1e-9), NH / 2 / Math.abs(dy || 1e-9)); return [a.x + dx * t, a.y + dy * t]; };
@@ -256,7 +256,7 @@ export class OrchView {
     let labels = '';   // 글자는 선 위에 그린다
     for (const e of edges) {
       const a = N[e.from], b = N[e.to], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy), px = -dy / L, py = dx / L;
-      const back = !!by[`${e.to}>${e.from}`] || (e.to === 'erp' || e.from === 'erp'), off = back ? 7 : 0;   // 양방향이면 나란히 비켜 그린다 (수직 방향이 진행 방향 기준이라 반대 방향 선은 반대쪽으로 비켜진다)
+      const back = !!by[`${e.to}>${e.from}`] || (e.to === 'fac' || e.from === 'fac'), off = back ? 7 : 0;   // 양방향이면 나란히 비켜 그린다 (수직 방향이 진행 방향 기준이라 반대 방향 선은 반대쪽으로 비켜진다)
       const [sx, sy] = clip(a, dx, dy), [ex, ey] = clip(b, -dx, -dy);
       const dim = f !== 'all' && !e.has.includes(f), w = e.n ? 1.2 + 2.6 * Math.sqrt(e.n / max) : 1, C = CLS_COLOR[e.main];
       const x1 = sx + px * off, y1 = sy + py * off, x2 = ex + px * off, y2 = ey + py * off;

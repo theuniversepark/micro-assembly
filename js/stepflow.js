@@ -131,14 +131,14 @@ export const STEP_FLOWS = [
       F2: ['AMR 귀환', '투입구 대기열·충전'], F3: ['지게차 상차·출하', '트럭 적재 후 출발'],
       C3: ['적재·상차 완료 신호', '구역 수량 갱신'], O4: ['완제품 재고 반영', '제품별 적재 수량'],
       O5: ['생산 실적 확정', '양품·유출 불량 집계'], A5: ['KPI 갱신', 'UPH·OEE·재공 산출'],
-      A6: ['ERP(Odoo) 연동', '생산입고·출하 전표 생성'], O7: ['AMR 재배치', '다음 투입 사이클 준비'],
+      A6: ['FAC 기록', '생산입고·출하 전표 생성'], O7: ['AMR 재배치', '다음 투입 사이클 준비'],
     },
     exc: [],
     links: [['O0', 'C1', 'c'], ['C1', 'F1', 'c'], ['F1', 'F2'], ['F2', 'F3'], ['F3', 'C3', 'e'], ['C3', 'O4', 'e'], ['O4', 'O5'], ['O5', 'A5', 'e'], ['A5', 'A6'], ['O5', 'O7']],
     note: { A: '만재 전에 출하해 라인 막힘 예방', C: '' },
     live(sim, [st]) {
       const on = { BUSY: ['C1', 'F1'], FULL: ['C1', 'A0'] }[st.state] ?? [];
-      const q = sim.erp?.on ? sim.erp.seq : null;
+      const q = sim.fac?.on ? sim.fac.seq : null;
       return { on, n: { F1: `적재 ${st.c.processed}`, F3: `출하 ${sim.stats.shipped}`, A6: q ? `생산입고 ${q.mrp} · 출하 ${q.out}` : null, C1: sim.stats.rejected ? `빈 AMR ${sim.stats.rejected}` : null } };
     },
   },

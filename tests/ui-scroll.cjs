@@ -62,7 +62,7 @@ app.whenReady().then(async () => {
   await testPopup('진화 컨셉', () => clickId('btnConcept'), D('#concept'), () => clickId('closeConcept'));
   await testPopup('3단계 8시간 비교', async () => { await clickId('btnCompare'); await wait(1500); }, D('#compare'), () => clickId('closeCompare'));
   await testPopup('데이터 연동', () => clickId('btnData'), D('#datahub'), () => clickId('closeData'));
-  for (const tab of ['po', 'stock', 'mr', 'live', 'log']) await testPopup(`Odoo (${tab})`, async () => { await clickId('btnOdoo'); await js(`document.querySelector('[data-odtab=${tab}]')?.click()`); }, D('#odooModal'), () => clickId('closeOdoo'));
+  for (const tab of ['po', 'stock', 'mr', 'api', 'log']) await testPopup(`FAC (${tab})`, async () => { await clickId('btnFac'); await js(`document.querySelector('[data-factab=${tab}]')?.click()`); }, D('#facModal'), () => clickId('closeFac'));
   await testPopup('VLA 학습', () => clickId('btnVla'), D('#vlaModal'), () => clickId('closeVla'));
   await testPopup('AIOS 학습', () => clickId('btnAios'), D('#aiosModal'), () => clickId('closeAios'));
   for (const v of ['agent', 'cell', 'sense']) await testPopup(`FACOS 상세 (${v})`, () => js(`document.querySelector('#facos [data-open="facos:${v}"]')?.click()`), D('#facosModal'), () => clickId('closeFacos'));
