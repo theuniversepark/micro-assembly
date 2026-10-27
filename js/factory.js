@@ -2490,7 +2490,7 @@ export class FactoryView {
       return { v, g, el, lbl, yaw: v.heading };
     });
     this.carrierViews = sim.carriers.map((c) => {
-      const g = makeCarrierAMR();
+      const g = makeCarrierAMR(); addKitPockets(g);   // 키트 포켓은 AMR에 늘 달려 있다 (빈 AMR도 — 대상물을 실은 AMR과 같은 모습)
       this.dyn.add(g);
       return { v: c, g, yaw: c.heading };
     });
