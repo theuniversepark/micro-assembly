@@ -27,7 +27,7 @@ const SHIFTS = ['자동화 전환<br><small>로봇·AMR·IoT·MES</small>', '자
 const ROWS = [
   ['공정 작업', ['작업자 수작업 · 단독 설비', '양쪽 협동로봇 셀 · 6축', '협동로봇·AMMR·휴머노이드(피지컬AI 전용) 셀 + VLA · 폐루프 자율 보정']],
   ['셀 간 물류', ['고정 컨베이어 · 지게차', `AMR ${ZONE_AMR.count}대 · AGV ${MODES.smart.vehicles}대`, `AMR ${ZONE_AMR.count}대 · AGV ${MODES.dark.vehicles}대 · 휴머노이드 부품 보충 ${MODES.dark.helpers}대`]],
-  ['입고·창고', ['입고 트럭 · 유인 지게차 · 수기 발주', 'WMS 재주문점 발주 · 물류 확장동 통과형 선반 · 유인 지게차', 'WMS 발주 · 입고 자율 지게차(전용 통로) · 선반 → AGV·휴머노이드 자율 출고']],
+  ['입고·창고', ['입고 트럭 · 유인 지게차 · 수기 발주', 'WMS 재주문점 발주 · 물류 확장동 미니로드 AS/RS · 유인 지게차', 'WMS 발주 · 입고 자율 지게차(전용 통로) · 선반 → AGV·휴머노이드 자율 출고']],
   ['이동 로봇 에너지', ['— (사람·유인 장비)', 'AGV 충전 패드 · AMR 정차 무선 충전', '전 로봇 배터리 관리 — 기회 충전 · 휴머노이드 팩 교체 · 드론·사족 도킹']],
   ['설비 정비', [`사후보전 — ${MODES.traditional.andon ? '안돈 알람 자동 호출' : '고장 후 인지'} (약 ${MODES.traditional.alarmDelay}초 지연)`, '예지정비 — IoT 임계치 · 정비원', `휴머노이드 정비 ${MODES.dark.techs}대 + 사족보행 순찰 ${MODES.dark.quadrupeds}대 선제 감지`]],
   ['품질', ['육안 검사', '비전·토크 전수 판정 · SPC 보정', '전수 판정 + 자율 재보정']],

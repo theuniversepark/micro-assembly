@@ -1,4 +1,4 @@
-// AIOS — 공장 운영 AI (FACOS: 공장 운영 시스템 관점, 피지컬AI 단계)
+// AIOS — 공장 운영 AI (FacOS: 공장 운영 시스템 관점, 피지컬AI 단계)
 // VLA가 끝단 로봇의 추론 모델이라면, AIOS는 공장 오케스트레이터가 쓰는 운영 정책 모델이다.
 // 1) 수집: 현장에서 올라오는 생산·설비·물류·에너지·품질 데이터와 인시던트·운영 의사결정을 10초마다 한 샘플로 모은다.
 // 2) AI-ready 정제: 고정 스키마의 특징 벡터(시계열) + 이벤트(인시던트·의사결정) + 전이(상태·행동·보상·다음 상태)로 만들고,
@@ -7,7 +7,7 @@
 // 4) 트윈 검증: 같은 라인·조건의 디지털트윈 시뮬레이션 두 벌(현재 정책 vs 후보 정책)을 실제로 돌려 생산량·에너지를 비교한다.
 // 5) 배포: 오케스트레이터에 섀도 모드(추천만) → 적용 → 실측 효과 확인, 나빠지면 자동 롤백.
 // 학습은 규칙 기반 정책 탐색이고(신경망 아님), 트윈 검증과 배포 후 효과는 시뮬레이션에서 실제로 측정한 값이다.
-import { Simulation } from './sim.js';
+import { Simulation, mulberry32 } from './sim.js';
 import { FactoryAgent } from './agent.js';
 
 export const SAMPLE_S = 10;            // 샘플 주기 (시뮬레이션 초)
@@ -40,6 +40,7 @@ const r1 = (v) => Math.round(v * 10) / 10, r3 = (v) => Math.round(v * 1000) / 10
 export class AIOSPipeline {
   constructor(sim) {
     this.sim = sim; sim.aios = this;
+    this.rng = mulberry32(((sim.seed ?? 1) * 2654435761 + 7) >>> 0);   // 학습 곡선 흔들림 — 생산 흐름 난수(sim.rand)를 쓰면 학습이 시작된 뒤 고장·불량 결과가 바뀐다
     this.on = sim.mode.key === 'dark' && !sim.twin;
     this.policy = Object.fromEntries(HEADS.map((h) => [h.key, h.base]));
     if (this.on) this.apply(this.policy);   // 트윈은 검증할 정책을 따로 넣는다
@@ -176,7 +177,7 @@ export class AIOSPipeline {
     const j = this.job;
     if (j.phase === 'train') {
       const ep = Math.min(j.epochs, Math.floor((s.time - j.t0) / 5));
-      while (j.loss.length < ep) { const e = j.loss.length + 1; j.loss.push(r3(0.08 + 0.6 * Math.exp(-e / (2.2 + j.samples / 200)) + (s.rand() - 0.5) * 0.01)); }
+      while (j.loss.length < ep) { const e = j.loss.length + 1; j.loss.push(r3(0.08 + 0.6 * Math.exp(-e / (2.2 + j.samples / 200)) + (this.rng() - 0.5) * 0.01)); }
       j.epoch = ep;
       if (ep >= j.epochs) {
         if (!j.why.length) { j.phase = 'rejected'; j.reason = '데이터에서 개선할 정책을 찾지 못함 (현재 정책 유지)'; this.finishReject(j); return; }
@@ -190,15 +191,22 @@ export class AIOSPipeline {
         s.log('ok', `AIOS ${j.label} 트윈 검증 통과 → 섀도 모드`, { obs: `트윈 20분×2 · UPH ${R.uphCur} → ${R.uphCand} (${R.gain >= 0 ? '+' : ''}${R.gain}%) · kWh/개 ${R.kwhCur} → ${R.kwhCand}`, dec: j.why.join(' · '), act: `오케스트레이터 섀도 모드 ${SHADOW_S}초 (추천만, 현재 정책 실행)` });
       } else { j.phase = 'rejected'; j.reason = `트윈 검증 미달 — UPH ${R.gain >= 0 ? '+' : ''}${R.gain}%, 에너지 ${R.eGain >= 0 ? '+' : ''}${R.eGain}%`; this.finishReject(j); }
     } else if (j.phase === 'shadow' && s.time - j.t2 >= SHADOW_S) {
+      // 배포는 FacOS 공장 결정을 거친다 (자율 결정 · 트윈 검증 통과가 조건 · 계획 버전 증가) — 상위망 단절이면 섀도 모드를 한 번 더
+      const diff = HEADS.filter((h) => j.prev[h.key] !== j.cand[h.key]);
+      const r = s.fos ? s.fos.change({ kind: 'aios-policy', title: `AIOS ${j.label} 운영 정책 배포`, target: { model: j.label }, before: diff.map((h) => `${h.label} ${j.prev[h.key]}${h.unit}`).join(' · '), after: diff.map((h) => `${h.label} ${j.cand[h.key]}${h.unit}`).join(' · '), by: 'AIOS (트윈 검증 통과 · 섀도 모드 정상)', constraints: `배포 후 ${VERIFY_S / 60}분 실측 · UPH 5% 넘게 떨어지면 자동 롤백`, resume: '실측 판정' }) : { ok: true };
+      if (!r.ok) { j.t2 = s.time; j.deferred = (j.deferred ?? 0) + 1; s.log('warn', `AIOS ${j.label} 배포 대기`, { obs: r.reason, act: `섀도 모드 ${SHADOW_S}초 연장` }); return; }
+      j.version = s.fos?.planVersion ?? null;
       j.phase = 'verify'; j.t3 = s.time; j.base = { good: s.stats.good, t: s.time, uph: Math.round(s.kpi().uphRecent) };
       this.policy = { ...j.cand }; this.apply(this.policy); this.latest = j.v;
       this.models.unshift({ v: j.v, label: j.label, policy: { ...j.cand }, note: j.why.join(' · '), t: s.time, twin: j.result });
-      s.log('act', `AIOS ${j.label} 오케스트레이터 배포`, { obs: `섀도 모드 ${SHADOW_S}초 — 추천과 운영 상태 정상`, dec: HEADS.filter((h) => j.prev[h.key] !== j.cand[h.key]).map((h) => `${h.label} ${j.prev[h.key]}${h.unit} → ${j.cand[h.key]}${h.unit}`).join(' · '), act: `운영 정책 적용 · ${VERIFY_S / 60}분 동안 실측 효과 확인` });
+      s.log('act', `AIOS ${j.label} 오케스트레이터 배포`, { obs: `섀도 모드 ${SHADOW_S}초 — 추천과 운영 상태 정상`, dec: HEADS.filter((h) => j.prev[h.key] !== j.cand[h.key]).map((h) => `${h.label} ${j.prev[h.key]}${h.unit} → ${j.cand[h.key]}${h.unit}`).join(' · '), act: `운영 정책 적용${j.version ? ` (FacOS 결정 · 계획 ${j.version})` : ""} · ${VERIFY_S / 60}분 동안 실측 효과 확인` });
     } else if (j.phase === 'verify' && s.time - j.t3 >= VERIFY_S) {
       const uph = Math.round(((s.stats.good - j.base.good) / (s.time - j.t3)) * 3600);
       j.after = { uph, before: j.base.uph };
       if (j.base.uph > 0 && uph < j.base.uph * 0.95) {
-        j.phase = 'rollback'; this.policy = { ...j.prev }; this.apply(this.policy); this.latest = this.models[1]?.v ?? 0; this.models.shift();
+        j.phase = 'rollback';
+        s.fos?.change({ kind: 'aios-rollback', title: `AIOS ${j.label} 자동 롤백`, target: { model: j.label }, before: `UPH ${uph}`, after: `배포 전 정책 (UPH ${j.base.uph})`, by: 'AIOS (실측 악화)', autonomous: true, verdict: '롤백', constraints: '이전 승인 정책으로 복귀', resume: '' });
+        this.policy = { ...j.prev }; this.apply(this.policy); this.latest = this.models[1]?.v ?? 0; this.models.shift();
         s.log('warn', `AIOS ${j.label} 롤백`, { obs: `배포 후 UPH ${uph} (배포 전 ${j.base.uph})`, act: `이전 모델 ${this.version}로 복귀` });
       } else {
         j.phase = 'done';

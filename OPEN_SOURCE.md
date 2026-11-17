@@ -1,20 +1,25 @@
 # 오픈소스 고지 (Open Source Notices)
 
-피지컬AI 실증 메타팩토리(메타팩토리 정밀조립Zone 디지털트윈)를 만들고 배포하는 데 사용한 오픈소스 라이브러리, 개발 도구, 외부 사이트·서비스, 참고 표준을 정리합니다. 버전·라이선스는 프로젝트에 설치된 각 패키지의 `package.json` 기준입니다.
+피지컬AI 실증 메타팩토리(메타팩토리 정밀조립Zone 디지털트윈)를 만들고 배포하는 데 사용한 오픈소스 라이브러리, 개발 도구, 외부 사이트·서비스, 참고 표준을 정리합니다. 버전·라이선스는 프로젝트에 설치된 각 패키지의 `package.json` 기준입니다. 이 저장소의 소스 코드 자체는 MIT 라이선스([LICENSE](LICENSE), 저작권자 캠틱종합기술원)이며, 아래 외부 라이브러리 · 모델 · 로고 · 상표는 각자의 조건을 따릅니다.
 
 ## 1. 오픈소스 라이브러리 (앱에 포함되어 동작)
 
 | 이름 | 버전 | 라이선스 | 출처 | 쓰인 곳 |
 |---|---|---|---|---|
-| three.js | 0.186.1 | MIT | https://github.com/mrdoob/three.js | 3D 렌더링 전체 (`vendor/three`) |
+| three.js | 0.186.1 | MIT | https://github.com/mrdoob/three.js | 3D 렌더링 전체 (`vendor/three`) · 안내 아바타 토리 캔버스는 같은 배포본의 WebGPU 빌드 `vendor/three/three.webgpu.js` (WebGPU가 없으면 WebGL) |
 | └ OrbitControls · CSS2DRenderer · EffectComposer · RenderPass · UnrealBloomPass · OutputPass | (three.js `examples/jsm`) | MIT | 같은 저장소 | 시점 조작, 라벨, 발광·후처리 |
 | └ WebGLRenderTarget · readRenderTargetPixels | (three.js 코어) | MIT | 같은 저장소 | 로봇 카메라 영상(관제 디스플레이 8분할, 로봇 정보 창 실시간 영상) |
 | └ GLTFLoader · RoomEnvironment (+ BufferGeometryUtils · SkeletonUtils) | (three.js `examples/jsm`) | MIT | 같은 저장소 | Blender 모델 렌더(기본) — glTF 모델 불러오기·실내 환경광 (`vendor/three/addons`) |
-| Electron | 44.5.1 | MIT | https://github.com/electron/electron | Mac 앱 셸 (피지컬AI 실증 메타팩토리.app) |
-| @electron/packager | 20.3.0 | BSD-2-Clause | https://github.com/electron/packager | Mac 앱 패키징 (`npm run package`) |
+| Electron | 44.5.1 | MIT | https://github.com/electron/electron | 맥·윈도우 앱 셸 (Jin-micro.app · Jin-micro.exe) |
+| @electron/packager | 20.3.0 | BSD-2-Clause | https://github.com/electron/packager | 맥·윈도우 앱 패키징 (`npm run package` · `npm run package:win`) |
 | @anthropic-ai/sdk | 0.131.0 | MIT | https://github.com/anthropics/anthropic-sdk-typescript | Agent(Claude API) 호출 서버 |
-| aedes | 1.2.0 | MIT | https://github.com/moscajs/aedes | 내장 MQTT 브로커 |
-| MQTT.js (mqtt) | 5.16.0 | MIT | https://github.com/mqttjs/MQTT.js | 외부 MQTT 브로커 연계(브리지) |
+| aedes | 1.2.0 | MIT | https://github.com/moscajs/aedes | 내장 MQTT 브로커 대비 엔진 (MQTT 3.1.1 — Mosquitto가 없거나 시작에 실패할 때) |
+| Eclipse Mosquitto | 2.1.2 | EPL-2.0 OR EDL-1.0 (BSD-3-Clause) | https://mosquitto.org · https://github.com/eclipse-mosquitto/mosquitto | 내장 MQTT 5 브로커 (`vendor/mosquitto/` — 맥: Homebrew 빌드, 라이브러리 경로만 앱 안으로 바꿈 · 윈도우: 공식 설치본 mosquitto-2.1.2-install-windows-x64.exe에서 필요한 파일만) |
+| OpenSSL | 3.x | Apache-2.0 | https://www.openssl.org | Mosquitto가 쓰는 암호 라이브러리 (`vendor/mosquitto/*/libssl · libcrypto`) |
+| cJSON | 1.7.x | MIT | https://github.com/DaveGamble/cJSON | Mosquitto가 쓰는 JSON 라이브러리 (`vendor/mosquitto/*/libcjson · cjson.dll`) |
+| GNU libmicrohttpd | (Mosquitto 윈도우 배포본 포함) | LGPL-2.1-or-later (동적 연결 DLL, 수정 없음) | https://www.gnu.org/software/libmicrohttpd/ | 윈도우 Mosquitto가 함께 쓰는 DLL (`vendor/mosquitto/win32-x64/libmicrohttpd-dll.dll`) |
+| Microsoft Visual C++ 런타임 (vcruntime140.dll) | 14.x | Microsoft 재배포 가능 파일 (Visual C++ 재배포 패키지 라이선스) | https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files | 윈도우 Mosquitto 실행에 필요 — Mosquitto 설치본에 들어 있는 vc_redist.x64.exe에서 꺼냄 (앱 폴더 배포) |
+| MQTT.js (mqtt) | 5.16.0 | MIT | https://github.com/mqttjs/MQTT.js | 외부 MQTT 브로커 연계(브리지) · 앱 서버의 MQTT 5 발행 클라이언트 · Sparkplug B 엣지·주 호스트 |
 | mammoth | 1.13.0 | BSD-2-Clause | https://github.com/mwilliamson/mammoth.js | 공정 설계 첨부 워드(.docx) 본문 추출 (`vendor/mammoth`) |
 | SheetJS Community Edition (xlsx) | 0.20.3 | Apache-2.0 | https://git.sheetjs.com/SheetJS/sheetjs (배포: https://cdn.sheetjs.com) | 공정 설계 첨부 엑셀 → CSV (`vendor/xlsx`) |
 
@@ -27,11 +32,15 @@
 | Blender 5.2 | GPL-2.0-or-later (프로그램) — 만든 결과물(모델·렌더)은 만든 사람의 것 | https://www.blender.org | `blender/build_assets.py`로 AMR·AGV·지게차·드론·휴머노이드·사족보행·6축 팔·AMMR·화물트럭·갠트리·e-axle·도어트림·조립·체결 부품·정비실 비품 모델링과 기본 도형 라이브러리(`tools/collect-primitives.cjs`로 모은 치수 284종) → `assets/blender/*.glb`·미리보기 렌더 (Blender 프로그램은 앱에 포함하지 않음) |
 | aas-core3.0 (Python) | MIT | https://github.com/aas-core-works/aas-core3.0-python | 내보낸 AAS JSON·XML 표준 적합성 검증 (메타모델 v3.0으로 저장한 파일 — v3.1 기본 파일은 BaSyx SDK로 검증) |
 | Eclipse BaSyx Python SDK 2.2 · Compliance Tool | MIT | https://github.com/eclipse-basyx/basyx-python-sdk | 내보낸 AASX·AAS JSON·XML(메타모델 v3.1)이 BaSyx로 엄격 파싱되는지 검증 (`tests/aasbasyx.mjs`, 별도 빌드한 Jin-AASX 가상환경 사용 · 앱에 포함하지 않음) |
+| @zxing/library 0.23 | Apache-2.0 | https://github.com/zxing-js/library | 앱 안 QR · DataMatrix 인코더(`js/codes.js`)가 만든 코드가 실제로 읽히는지 시험 (`tests/serial.mjs`) |
+| Ajv 8 · ajv-formats 3 | MIT | https://github.com/ajv-validator/ajv | EPCIS 2.0 이벤트 문서를 GS1 공식 JSON 스키마(https://ref.gs1.org/standards/epcis/epcis-json-schema.json)로 검증 (`tests/epcis.mjs`) |
+| DoWhy · PyRCA (sfr-pyrca) · causal-learn | MIT · BSD-3-Clause · MIT | https://github.com/py-why/dowhy · https://github.com/salesforce/PyRCA | 불량 원인 분석 노트북 (`analysis/rca/` — 내려받은 데이터셋 분석, 앱과 따로 설치) |
 | Node.js · npm | MIT 등 | https://nodejs.org | 서버 실행, 시뮬레이션 자동 시험(`npm test`) |
 | Python 3 | PSF | https://python.org | 개발 보조 스크립트, AAS 검증 |
+| edge-tts 7.3 (Python) | 저장소 LICENSE 참조 | https://github.com/rany2/edge-tts | 토리(안내 아바타) 음성 녹음 생성(`npm run tori:voice` · `tools/tori-voice.mjs`) — Microsoft Edge 읽기 기능의 신경망 음성 `ko-KR-InJoonNeural` · `en-US-AndrewNeural`을 키 없이 호출하는 비공식 도구. 만들 때만 쓰고 앱 실행 중에는 쓰지 않음. 이 저장소의 녹음은 상위 meta-factory에서 만든 파일 가운데 문장이 같은 것만 가져왔고, 여기서 새로 만들지 않았음 |
 | Git · GitHub CLI | GPL-2.0 · MIT | https://git-scm.com · https://cli.github.com | 형상 관리, 저장소·배포 상태 확인 |
 | macOS codesign | Apple 기본 도구 | — | Mac 앱 서명 (ad-hoc) |
-| FFmpeg (libx264 포함) | LGPL-2.1-or-later / GPL-2.0-or-later (libx264 사용 빌드) | https://ffmpeg.org | 로봇 카메라·CCTV 녹화 영상(WebM)을 MP4(H.264)로 변환하고 카메라별로 잘라 냄 (`server/video-convert.mjs`). **앱에 포함하지 않고** 이 컴퓨터에 설치된 ffmpeg를 외부 프로그램으로 실행만 함 (FFMPEG_PATH → Homebrew → ~/.local/bin → PATH 순으로 찾음). 없으면 WebM으로만 저장 |
+| FFmpeg (libx264 포함) | LGPL-2.1-or-later / GPL-2.0-or-later (libx264 사용 빌드) | https://ffmpeg.org | 로봇 카메라·CCTV 녹화 영상(WebM)을 MP4(H.264)로 변환하고 카메라별로 잘라 냄 (`server/video-convert.mjs`). **앱에 포함하지 않고** 이 컴퓨터에 설치된 ffmpeg를 외부 프로그램으로 실행만 함 (FFMPEG_PATH → Homebrew → ~/.local/bin → 윈도우는 winget 링크 · C:\ffmpeg · Program Files → PATH 순으로 찾음). 없으면 WebM으로만 저장 |
 
 ## 3. 외부 사이트·서비스
 
@@ -45,6 +54,8 @@
 | https://console.anthropic.com/settings/keys | 설정 화면의 API 키 발급 안내 링크 |
 | 과학기술정보통신부 — https://www.msit.go.kr (세로형·가로형 로고 SVG: https://commons.wikimedia.org/wiki/File:Ministry_of_Science_and_ICT_of_the_Republic_of_Korea_Logo_(vertical).svg · https://commons.wikimedia.org/wiki/File:Ministry_of_Science_and_ICT_of_the_Republic_of_Korea_Logo_(horizontal).svg) · 정보통신산업진흥원 — https://www.nipa.kr (CI 원본: https://www.nipa.kr/home/4-4-5) | 서버 랙 양옆 로고·앞쪽 바닥 표시 이미지 `assets/msit_logo.png` · `assets/nipa_logo.png` · `assets/msit_nipa_ci_v2.png` 출처 (바닥 표시는 공식 가로형 시그니처를 쓰고 로고타입만 진한 회색으로 굵게 처리) |
 | 사용자 제공 이미지 | 도어트림 실물 이미지 `assets/doortrim.png` · e-axle 실물 단면 이미지 `assets/eaxle.png` (부품분류셀 이후 AMR 위 제품 표시) |
+| 사용자 제공 이미지 (캐릭터) | 안내 아바타 토리 — 공장장 캐릭터 이미지 `assets/tori/manager.png` · 영어 안내용 `assets/tori/manager-en.png` |
+| Microsoft 신경망 음성 (ko-KR-InJoonNeural · en-US-AndrewNeural) | 토리 안내 음성 녹음 `assets/tori/voice/*.mp3` · `assets/tori/voice/en/*.mp3` — edge-tts로 미리 만든 파일. 앱 실행 중에는 접속하지 않음. 공개 배포물에 넣는 것에 대한 이용 조건은 확인되지 않음(정식 Azure Speech 등으로 다시 만들 수 있게 생성 도구를 분리함) |
 
 - AAS 데이터 안의 `https://admin-shell.io/...`, `https://camtic.or.kr/aas/jin3d/...` 등은 의미 식별자(semanticId·id)이며 실행 중 접속하지 않습니다.
 - 폰트는 외부에서 받지 않고 운영체제 기본 폰트(Apple SD Gothic Neo, 대체 Noto Sans KR·맑은 고딕)를 씁니다.

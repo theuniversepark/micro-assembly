@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: Jin-micro
+    folder: Jin-micro
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

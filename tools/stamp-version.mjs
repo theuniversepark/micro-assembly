@@ -15,7 +15,7 @@ const HTML = path.join(ROOT, 'index.html');
 const hash = (rel) => crypto.createHash('sha1').update(fs.readFileSync(path.join(ROOT, rel))).digest('hex').slice(0, 10);
 
 const files = fs.readdirSync(path.join(ROOT, 'js')).filter((f) => f.endsWith('.js')).sort();
-const map = { three: './vendor/three/three.module.js', 'three/addons/': './vendor/three/addons/' };
+const map = { three: './vendor/three/three.module.js', 'three/webgpu': './vendor/three/three.webgpu.js', 'three/addons/': './vendor/three/addons/' };   // three/webgpu: 안내 아바타 토리 전용 캔버스 (js/tori.js)
 for (const f of files) map[`./js/${f}`] = `./js/${f}?v=${hash(`js/${f}`)}`;
 const json = `{ "imports": {\n${Object.entries(map).map(([k, v]) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(',\n')}\n    } }`;
 

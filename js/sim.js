@@ -2,11 +2,18 @@
 import { ImpactTracker } from './impact.js';
 import { CommandCenter } from './commands.js';
 import { TruckYard, planForklift, YARD } from './shipping.js';
-import { InboundYard, planReceiver, WH, INBOUND } from './receiving.js';
+import { InboundYard, planReceiver, WH, INBOUND, MINILOAD, WH_RACK } from './receiving.js';
 import { PatrolDrone, MISSION_PRIO } from './drone.js';
 import { planCCTV, CCTVAgent } from './cctv.js';
 import { Private5G } from './net5g.js';
 import { FacLedger } from './fac.js';
+import { ProductTrace } from './trace.js';
+import { SerialHub } from './serial.js';
+import { QualityComm } from './qcomm.js';
+import { SensorNet } from './sensors.js';
+import { CapaManager } from './capa.js';
+import { FactoryOS } from './factoryos.js';
+import { ZoneKpi } from './zonekpi.js';
 import { VLAPipeline } from './vla.js';
 import { AIOSPipeline } from './aios.js';
 import { SecurityLayer } from './security.js';
@@ -25,6 +32,8 @@ export function mulberry32(a) {
   };
 }
 
+// 시뮬레이션 고정 간격(초) — 화면 루프(main.js) · 3단계 비교 · 트윈 검증이 같은 간격으로 돌아야 같은 시드의 결과가 같다
+export const SIM_DT = 0.1;
 export const MODES = {
   traditional: {
     key: 'traditional', label: '레거시 공장', short: '레거시',
@@ -79,7 +88,6 @@ export const TOOL_KITS = {
   debris: { label: '이물질 수거 도구', items: '빗자루 · 쓰레받기 · 수거함', vis: 'broom', at: 4.35 },
   smoke:  { label: '소화기', items: '분말 소화기', vis: 'extinguisher', at: -1.3 },   // 왼쪽 끝 충전 스테이션과 떨어지게
 };
-const SERIAL_YMD = (() => { const d = new Date(); return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; })();   // 시리얼 생산일 (실행한 날)
 const TECH_ROOM = { x: 12.8, z: 16.0 };   // 정비실 기준점 (factory.js 정비실 그룹과 같은 자리)
 export const toolSpot = (kit) => ({ x: TECH_ROOM.x + TOOL_KITS[kit].at, z: 14.65, aisle: 'F', name: `정비실 ${TOOL_KITS[kit].label} 보관대` });
 // 정비실 동선: 정비 휴머노이드 충전 스테이션은 정비실 양쪽 끝(서로 마주 봄), 도구 보관대는 안쪽 줄(z 14.65)
@@ -147,8 +155,8 @@ export const LOC = {
   // AGV는 앞쪽 통로(z 9)를 확장동까지 연장한 차로에서 곧장 북쪽으로 들어와 원자재 칸 앞에 선다 (투입구도 앞쪽 통로라 세로 통로를 건너지 않는다)
   WH: { x: -43.2, z: 0.9, aisle: 'F', name: '자재창고' },
   WH_PARTS: { x: -43.5, z: -2.6, aisle: 'F', name: '부품 랙' },
-  WH_IN: { x: -47.5, z: 0.9, aisle: 'F', name: '자재창고 입고' },        // 입고 지게차: 선반 서쪽 면 원자재 칸 (지게차 통로 안)
-  WH_PARTS_IN: { x: -47.5, z: -4.1, aisle: 'F', name: '부품 입고' },    // 입고 지게차: 선반 서쪽 면 부품 칸
+  WH_IN: { x: -48.0, z: 0.9, aisle: 'F', name: '자재창고 입고' },        // 입고 지게차: 선반 서쪽 면 원자재 칸 (지게차 통로 안)
+  WH_PARTS_IN: { x: -48.0, z: -4.1, aisle: 'F', name: '부품 입고' },    // 입고 지게차: 선반 서쪽 면 부품 칸
   WH_LANE: -41.2,   // 부품 보충 휴머노이드의 선반 앞 진출입 세로 줄 (AGV 상차 자리 x −43.2를 비켜)
   WH_LANE_IN: -41.6, WH_LANE_OUT: -40.8,   // 일방통행 두 줄 — 선반으로 갈 때 서쪽 줄, 나올 때 동쪽 줄 (두 휴머노이드가 마주쳐 비켜서다 충전 도크 쪽으로 밀리지 않게)
   SRC: { x: -26, z: 4.2, aisle: 'F', name: '투입구' },
@@ -186,6 +194,19 @@ export function route(from, to, cur) {
   return pts;
 }
 
+// (x, z)가 통로 차로(가로) 위면 그 통로, 좌우 세로 통로 위면 가장 가까운 통로 — 아니면 null (진입자 추적 사족보행의 출발 · 종료 자리)
+function laneAisle(x, z) {
+  const near = Object.entries(AISLE).map(([k, az]) => ({ k, d: Math.min(Math.abs(z - (az - LANE)), Math.abs(z - (az + LANE)), Math.abs(z - az)), dz: Math.abs(z - az) }));
+  const onLane = near.filter((a) => a.d < 0.35).sort((a, b) => a.d - b.d)[0];
+  const onCol = [LEFT, RIGHT].some((cx) => Math.abs(x - (cx - LANE)) < 0.35 || Math.abs(x - (cx + LANE)) < 0.35 || Math.abs(x - cx) < 0.35);
+  return (onLane ?? (onCol ? near.sort((p, q) => p.dz - q.dz)[0] : null))?.k ?? null;
+}
+const ESCORT_GAP = 4.0, WALK_V = 0.8, ESCORT_V = 2.5;   // 진입자 추적: 사족보행은 사람과 4m 이상 떨어져 따라간다 · 진입자 걸음 0.8m/s(두리번거리며) · 사족보행 접근 · 따라잡기 2.5m/s
+// 진입자가 나가는 곳 — 이 건물에서 사람이 걸어 나갈 수 있는 곳은 벽이 없는 앞쪽 개방면(z +20)뿐이다 (뒷벽 출하 도크 · 왼쪽 벽 입고 도크 문은 접안 트럭이 막고 지게차 전용)
+//   오른쪽: 오른쪽 세로 통로(x 35)를 앞으로 곧게 · 왼쪽: 왼쪽 세로 통로(x −35.5) 앞은 AMR 대기열이라 앞쪽 통로를 물류 확장동 앞 빈 바닥(x −40)까지 따라가 앞으로
+export const EXITS = [{ key: 'right', name: '오른쪽 앞 개방면', col: RIGHT, x: RIGHT, z: 19.5 }, { key: 'left', name: '왼쪽 앞 개방면 (물류 확장동 앞)', col: LEFT, x: -40, z: 19.5 }];
+const BLDG = { x0: -51, x1: 38, z0: -20, z1: 20 };   // 건물 바닥 (생산동 + 물류 확장동) — 추적 로봇이 물러설 수 있는 범위
+
 // 이동체 크기(반지름, m) — 충돌 판정용
 const RADIUS = { dock: 0.5, agv: 0.8, forklift: 1.0, carrier: 0.8, robot: 0.6, quadruped: 0.55, humanoid: 0.35, human: 0.35, worker: 0.35 };
 export const moverRadius = (m) => RADIUS[m.kind] ?? 0.5;
@@ -194,6 +215,19 @@ const WIDTH = { dock: 0.95, agv: 1.1, forklift: 1.2, carrier: 0.95, robot: 0.9, 
 export const moverWidth = (m) => WIDTH[m.kind] ?? 0.8;
 // 지게차 포크: 차체 중심에서 앞으로 1.9m(포크 끝), 포크 폭 반 0.42m + 여유 — 차체·포크를 선분(뒤 0.8 ~ 앞 1.45m) + 반폭 0.55m로 본다
 export const FORK = { reach: 1.9, half: 0.55, back: 0.8, front: 1.45 };
+
+// 미니로드 출고 컨베이어 상차: AGV는 롤러 이재로 자동 적재 (MINILOAD.xfer초), 유인 지게차는 포크로 떠서 싣는다 (4초)
+const xferWait = (v) => (v.kind === 'agv' ? MINILOAD.xfer : 4);
+// 미니로드 출고 자리 (동쪽 면 바닥 출고 이재 컨베이어) — 화면(factory.js)과 간섭 검사(tests/logistics.mjs)가 같이 쓴다
+// end = 컨베이어 동쪽 끝 세계 x: AGV 자리는 차체 옆까지 신축 롤러를 내밀어 넘기고,
+// 휴머노이드 피킹 자리는 선반 면에서 멈춘다 — 휴머노이드는 선반을 보고 서서 손을 뻗어 토트를 집으므로 몸·다리가 컨베이어에 닿지 않는다
+const ML_FACE = WH_RACK.x + MINILOAD.half + 0.03;
+// fork = 유인 지게차(레거시) 상차 자리: 컨베이어를 보고(서쪽) 서서 포크 끝이 컨베이어 끝 5cm 앞 — AGV 자리(컨베이어 끝 옆)에 서면 떠날 때 제자리에서 도는 카운터웨이트가 컨베이어 끝·랙 기둥에 닿는다
+const forkAt = (z, end) => ({ x: end + FORK.reach + 0.05, z });
+export const MINILOAD_OUTS = {
+  wh: [{ z: LOC.WH.z, end: LOC.WH.x - 0.8, pick: LOC.WH, fork: forkAt(LOC.WH.z, LOC.WH.x - 0.8), keys: ['raw'], agv: true },
+    ...[0, 1, 2].map((i) => ({ z: LOC.WH_PARTS.z - i * 1.4, end: ML_FACE, pick: { x: LOC.WH_PARTS.x, z: LOC.WH_PARTS.z - i * 1.4 }, keys: ['parts'] }))],   // 부품 피킹: 휴머노이드마다 1.4m 간격 (h.pick)
+};
 
 // 이동체(AGV·지게차·정비 인력/로봇·작업자) — 단계(step) 목록을 순서대로 실행
 export class Mover {
@@ -280,7 +314,7 @@ export class Mover {
   setTask(name, steps) {   // 이동 중 재지시되면 새 경로로
     // 통로를 가다 재지시되면 지금 자리에서 새 경로를 잡는다 — 떠나온 자리(loc)로 되돌아갔다 가면 충전 도크·설비를 가로지른다 (순찰 중 사족보행 → 현장 이벤트 등)
     const g = this.steps[0]?.go;
-    if (g && AISLE[g.aisle] != null && this.path?.length && !this.path[0].detour && this.loc && Math.hypot(this.x - this.loc.x, this.z - this.loc.z) > 0.5) this.loc = { x: this.x, z: this.z, aisle: g.aisle, name: this.loc.name };
+    if (g && AISLE[g.aisle] != null && this.path?.length && !this.path[0].detour && this.loc && Math.hypot(this.x - this.loc.x, this.z - this.loc.z) > 0.5) this.loc = { x: this.x, z: this.z, aisle: laneAisle(this.x, this.z) ?? g.aisle, name: this.loc.name };   // 통로 차로 위면 지금 그 통로 — 가던 곳의 통로(g.aisle)로 두면 앞 통로에서 뒤 통로 셀로 가다 재지시될 때 셀을 가로지른다
     this.task = name; this.steps = steps; this.path = null; this.detourPts = 0;
   }
   update(dt) {
@@ -331,9 +365,11 @@ export class Mover {
       }
       if (!this.path.length) { this.path = null; this.loc = st.go; this.steps.shift(); this.detourPts = 0; }
     } else if ('wait' in st) {
+      if (st.face != null) this.heading = st.face;   // 서서 하는 일의 방향 (지게차 상차: 컨베이어 쪽)
       st.wait -= dt;
       if (st.wait <= 0) { st.done?.(); this.steps.shift(); }
     } else if (st.until) {
+      if (st.face != null) this.heading = st.face;
       if (st.task && this.task !== st.task) { st.prev = this.task; this.task = st.task; }   // 기다리는 동안 작업 표시를 바꾼다
       if (st.until()) { if (st.prev) this.task = st.prev; this.steps.shift(); if (this.steps.length && (this.instant = (this.instant ?? 0) + 1) < 8) return this.update(dt); }   // 시간이 안 드는 단계는 같은 틱에 이어서
     } else if (st.do) {
@@ -356,12 +392,13 @@ export class Simulation {
   constructor(modeKey = 'smart', seed = 12345, opts = {}) {
     const m = (this.mode = { ...MODES[modeKey] });   // 시뮬레이션마다 복사 — AIOS가 운영 정책 값을 바꿔도 다른 시뮬레이션에 번지지 않게
     this.twin = !!opts.twin;                          // AIOS 트윈 검증용 시뮬레이션
+    this.seed = seed;                                 // 보조 난수(AIOS 학습 곡선 · 보안 사건 대상)도 같은 시드에서 만든다
     this.rand = mulberry32(seed);
+    this.evRand = mulberry32((seed * 104729 + 41) >>> 0);   // 사용자가 넣는 현장 이벤트의 종류·자리 (생산 흐름 난수와 따로)
     this.quiet = !!opts.quiet;
     this.time = 0;
     this.nextItemId = 1;
     this.logs = []; this.logSeq = 0; this.events = [];
-    this.serialSeq = {};   // 제품 시리얼 일련번호 (제품 코드별 · 재사용 없음)
     this.stats = { released: 0, good: 0, escaped: 0, rejected: 0, failures: 0, pm: 0, cal: 0, energy: 0, shipped: 0, wipInt: 0, supplyTrips: 0, goodBy: {} };
     this.history = []; this.lastHist = -999;
     this.rawStock = 24; this.inboundRaw = 0; this.fgStock = 0; this.safetyStock = 10;
@@ -507,7 +544,10 @@ export class Simulation {
     // 점이 충전 도크(바닥 판·기둥 + 여유 0.45m) 위인지 — 자기 도크 제외
     // 자기 도크는 앞쪽(서는 자리)만 허용 — 뒤(기둥 쪽)로 비켜서다 도크 뒤를 돌아 맴돌지 않게
     const dockAt = (p, m) => this.docks.some((d) => { const H = d.owner.home, c = Math.cos(H.heading), sn = Math.sin(H.heading), rx = p.x - H.x, rz = p.z - H.z, lx = rx * c - rz * sn, lz = rx * sn + rz * c; return d.owner === m ? Math.abs(lx) < 0.93 && lz < 0.1 && lz > -1.6 : Math.abs(lx) < 0.93 && lz < 0.93 && lz > -1.6; });   // 도크 뒤 1.6m까지 금지 — 비켜서다 도크 뒤로 들어가 맴돌지 않게
-    for (const m of this.movers) m.dockAt = dockAt;
+    // 미니로드 몸체(두 줄 4단 선반 · 동쪽 면 x −44.15)도 비켜설 수 없는 자리 — 우회점이 선반 면 안쪽에 잡혀 휴머노이드가 선반을 파고들지 않게 (몸 반경 − 2cm 여유 · AGV는 차폭 반 0.55m — tests/logistics.mjs 간섭 기준과 같음)
+    const ML_BODY = { x0: WH_RACK.x - MINILOAD.half, x1: WH_RACK.x + MINILOAD.half, z0: WH_RACK.z - 5.1, z1: WH_RACK.z + 5.1 };
+    const inMiniload = (p, m) => { const r = (m ? (m.kind === 'agv' ? 0.55 : moverRadius(m)) : 0.5) - 0.02, dx = Math.max(ML_BODY.x0 - p.x, 0, p.x - ML_BODY.x1), dz = Math.max(ML_BODY.z0 - p.z, 0, p.z - ML_BODY.z1); return Math.hypot(dx, dz) < r; };
+    for (const m of this.movers) m.dockAt = (p, mm) => dockAt(p, mm) || inMiniload(p, mm);
     this.assignIds();
     // 피지컬AI: VLA 셀(6축 협동·산업용 로봇, AMMR)과 VLA 학습·배포 파이프라인
     for (const st of this.processing) st.vlaCell = m.key === 'dark' && ['cobot', 'articulated', 'ammr', 'humanoid'].includes(st.def.robot?.kind);
@@ -518,6 +558,13 @@ export class Simulation {
     this.cctvAgent = new CCTVAgent(this);   // 피지컬AI: CCTV 에이전트 (영상 감시 · 오케스트레이터 보고 · 이벤트 이력)
     this.net = new Private5G(this);   // Private 5G 특화망: 음영 없는 기지국 배치 · 이동 로봇 5G 모뎀 · 핸드오버 · 무손실 업링크 (자동화·피지컬AI)
     this.fac = new FacLedger(this);   // FAC(FACOS 업무 기록): 발주·재고·설비보전 (자동화·피지컬AI)
+    new ProductTrace(this, seed);   // 제품 추적 관리: 계보 · 공장 환경 센서 · 불량 사례·AI 원인 분석 (js/trace.js)
+    if (this.zone) new SerialHub(this, seed);   // 2단 ID: 투입 WIP ID → 최종 검사 합격 시 제품 시리얼·QR 마킹 · 출하 SSCC · 샘플 NG 봉쇄·처분 (js/serial.js)
+    new CapaManager(this);   // 품질 불량 → Zone·총괄 오케스트레이터 8D CAPA → 운영 정책 반영 (js/capa.js)
+    if (!this.quiet || opts.sensors) new SensorNet(this);   // 환경·설비 상태 센서망 — 센서 → 셀 엣지 → 게이트웨이 → 존 서버 → 공장 중앙 (js/sensors.js · 헤드리스 시험·트윈은 opts.sensors일 때만)
+    new QualityComm(this);   // 불량 판정 리포트 → 메인 서버 → RCA 서버 통신 · 품질 통신 pcap (js/qcomm.js)
+    new FactoryOS(this);   // FacOS 계층: 공장 오케스트레이터(FacOS) · 정밀조립 Manufacturing Agent · 셀 OCS · A2A 메시지 (js/factoryos.js)
+    new ZoneKpi(this);   // Zone 운영 분석: OEE · 손실·NG 파레토 · 관리도 · 공정–품질 상관 (js/zonekpi.js — Zone 대시보드)
     new SpsMonitor(this);   // 정밀조립Zone 서열 키팅(부품분류셀 양옆 키팅 구역 · AMR 키트 포켓) · 라인사이드 투빈 칸반 (js/sps.js)
   }
 
@@ -813,7 +860,7 @@ export class Simulation {
     (ev.affected ??= new Map());
     if (ev.affected.get(who) === mode) return;
     const first = !ev.affected.size; ev.affected.set(who, mode);
-    if (!ev.detected) this.detectFieldEvent(ev, who, 0.88);   // 진로 센서·카메라로 처음 발견 → 인시던트 열림
+    if (!ev.detected) this.detectFieldEvent(ev, who, 0.88, this.movers.some((m) => m.id === who) ? { type: 'mover', id: who } : null);   // 진로 센서·카메라로 처음 발견 → 인시던트 열림
     const inc = ev.inc ?? this.orch.find(`ev:${ev.id}`), L = FIELD_EVENTS[ev.type]?.label ?? '현장 이벤트';
     const text = `${who} 진로에 ${L} — ${mode === 'detour' ? '우회 경로로 돌아감' : '해결될 때까지 정지 대기'}`;
     if (inc?.status === 'open') ev.reported = (ev.reported ?? 0) + 1;
@@ -955,7 +1002,12 @@ export class Simulation {
     this.net?.update(dt);
     this.fac?.update();
     this.cctvAgent?.update(dt);   // 피지컬AI: CCTV 에이전트 — 영상 감시·오케스트레이터 보고·이벤트 이력
-    this.updateFieldEvents();
+    this.updateFieldEvents(dt, mdt);
+    this.trace?.update(dt);
+    this.sensors?.tick(dt);
+    this.serials?.update(dt);
+    this.fos?.update(dt);
+    this.zkpi?.tick();   // Zone 대시보드 추세 (30초마다 · js/zonekpi.js)
     this.orch.update();
     // 자재 공급이 재개되면 공급 차질 인시던트를 닫는다
     const sup = this.orch.find('supply');
@@ -991,6 +1043,7 @@ export class Simulation {
         if (product) this.releasedBy[product]++;
         const item = { id: this.nextItemId++, defect: false, defectBy: null, product, carrier: car };
         if (car) { car.state = 'line'; car.steps = []; car.task = '운반'; }
+        this.trace?.release(item, car);   // 제품 WIP ID·계보 시작
         src.out.items.push({ item, s: 0 });
         this.rawStock--; this.releaseTimer = 0; this.stats.released++;
         src.state = 'BUSY';
@@ -1031,6 +1084,7 @@ export class Simulation {
         S.grabBy ??= {}; S.grabBy[P] = (S.grabBy[P] ?? 0) + 1;
       }
       const { item } = c.items.shift();
+      this.trace?.finish(item);
       if (item.defect) this.stats.escaped++; else { this.stats.good++; if (item.product) this.stats.goodBy[item.product] = (this.stats.goodBy[item.product] ?? 0) + 1; }
       if (item.product) this.fgBy[item.product]++;
       this.fac?.produced(item.product ?? 'doortrim');   // FAC: 생산 입고 (구분 적재장에 들어온 수량 — 유출 불량 포함)
@@ -1040,14 +1094,6 @@ export class Simulation {
       sink.lastIn = this.time;
     }
     sink.state = this.time - (sink.lastIn ?? -99) < 12 ? 'BUSY' : 'IDLE';
-  }
-
-  // 제품 시리얼 (상위 meta-factory js/serial.js의 발행 부분): 최종 검사 합격 순간 제품 코드별 순차 발행 — DT-YYMMDD-000045 (재사용 없음)
-  // QR 라벨 내용은 GS1 Digital Link 형식(GTIN · AI 21 시리얼 · AI 11 생산일) — 업체코드 880 0000은 가상 값
-  markSerial(st, it) {
-    const code = it.product === 'doortrim' ? 'DT' : 'EA', n = (this.serialSeq[code] = (this.serialSeq[code] ?? 0) + 1);
-    it.serial = `${code}-${SERIAL_YMD}-${String(n).padStart(6, '0')}`;
-    st.lastMark = { t: this.time, id: it.serial }; st.marks = (st.marks ?? 0) + 1;
   }
 
   hazard(st) {
@@ -1193,8 +1239,10 @@ export class Simulation {
       const seed = Math.abs(Number(String(st.item.id).replace(/\D/g, '')) || 0), R = F ? F.max - F.min + 1 : 1;
       st.fastenPts = F && !st.item.scrap ? Array.from({ length: Math.max(1, st.def.robot?.count ?? 1) }, (_, i) => F.min + (seed * 7 + i * 2) % R) : null;
       const nominal = st.fastenPts ? fastenT(F, st.fastenPts) * (st.def.fastenK ?? 1) : st.def.cycleBy?.[st.item.product] ?? st.def.cycle;   // 정밀조립: 실제 작업 시간 (line.js ZONE_T — 체결 점 수 · 제품마다)
-      const base = nominal * m.cycleMul * st.speedMul * (this.vla?.cycleFactor(st) ?? 1);   // 배포된 VLA 모델 버전만큼 사이클 단축
+      this.trace?.enter(st, st.item);   // 제품 계보: 셀 투입 순간 설비·로봇·AMR·환경
+      const base = nominal * m.cycleMul * st.speedMul * (this.vla?.cycleFactor(st) ?? 1) * (this.trace?.cycleFactor(st) ?? 1);   // 배포된 VLA 모델 버전만큼 사이클 단축 · 환경 인터록 정책(공정 보상)
       st.cycleTime = st.item.scrap ? 0.5 : Math.max(base * 0.6, base * (1 + m.cycleVar * gauss(this.rand)));
+      if (st.def.type === 'pack' && !st.item.scrap && this.serials) st.cycleTime += this.serials.plan(st.item);   // 검사·포장셀: QR 라벨 판독 실패 → 재부착 시간만 더한다 (첫 라벨은 포장과 병렬)
       if (this.sps && !st.item.scrap) st.cycleTime += this.sps.plan(st, st.item);   // 서열 키팅: 버퍼가 비면 키트를 기다림 · 조립셀에서 키트 오류 발견 · 라인사이드 공용 부품 결품
     }
     if (!st.item && cycleStop) { st.state = 'CSTOP'; st.c.stop = (st.c.stop ?? 0) + dt; }
@@ -1250,6 +1298,7 @@ export class Simulation {
       if (it.defect && this.rand() < m.catchRate) {
         st.c.defects++;
         this.stats.rejected++;
+        this.trace?.inspect(st, it, 'NG');   // 불량 판정 → 불량 사례 · AI 원인 분석 · 8D CAPA
         this.emit('reject', { item: { ...it, carrier: null }, st });
         if (it.carrier) {
           // AMR 운반: 불량품만 배출함으로 빼고, 빈 AMR은 정상 경로로 적재장까지 가서 복귀 흐름에 합류한다
@@ -1259,10 +1308,13 @@ export class Simulation {
         st.item = null; st.done = false;
         return;
       }
+      this.trace?.inspect(st, it, it.defect ? 'MISS' : 'OK');
     } else {
-      const p = (m.defectBase / 4) * (st.def.defectMul ?? 1) * (1 + (100 - st.health) / 50) * (1 + st.drift * 1.5) * (this.vla?.defectFactor(st) ?? 1);
-      if (!it.defect && this.rand() < p) { it.defect = true; it.defectBy = st.id; st.c.defects++; }
-      if (st.def.type === 'pack' && this.zone && it.product) this.markSerial(st, it);   // 검사·포장셀 최종 외관·라벨 검사 합격 → 제품 시리얼 발행 · QR 라벨 부착 · 판독
+      const p = (m.defectBase / 4) * (st.def.defectMul ?? 1) * (1 + (100 - st.health) / 50) * (1 + st.drift * 1.5) * (this.vla?.defectFactor(st) ?? 1) * (this.trace?.envMul(st) ?? 1);   // 환경 이상(공정별 민감 요인)도 불량 확률에
+      const made = !it.defect && (st.forceDefect > 0 ? (st.forceDefect--, true) : this.rand() < p);   // forceDefect: 안내 시나리오(토리 품질 관리)가 공정 편차와 함께 건 「다음 N개 불량」 — 없으면 난수 흐름 그대로
+      if (made) { it.defect = true; it.defectBy = st.id; st.c.defects++; }
+      if (st.def.type === 'pack') { const u = this.serials?.issue(it, { cell: st.id, name: st.name }); if (u) st.lastMark = { t: this.time, id: u.serial, grade: u.mark?.grade }; }   // 검사·포장셀 최종 외관·라벨 검사 합격 → 제품 시리얼 발행 · QR 라벨 부착 · 판독 검증 (js/serial.js)
+      this.trace?.done(st, it, made, p);
     }
     if (st.def.effect === 'sort') it.sorted = true;
     else if (st.def.effect === 'press') it.pressed = true;
@@ -1314,8 +1366,9 @@ export class Simulation {
   }
 
   requestTech(st, kind, delay = 0) {
-    if (st.request) return false;
-    if (kind !== 'repair' && this.cmd.stationGate(st)) return false;   // 명령으로 멈춘 셀에는 정비·보정을 새로 걸지 않는다 (수리 요청은 접수)
+    if (st.request) { if (st.request.kind !== kind) this.fos?.validate(st, kind, false, `거부 — ${{ repair: '긴급수리', pm: '예지정비', cal: '재보정' }[st.request.kind] ?? '정비'} 진행·대기 중`); return false; }
+    if (kind !== 'repair' && this.cmd.stationGate(st)) { this.fos?.validate(st, kind, false, '거부 — 현장 명령으로 정지 중 (인터록)'); return false; }   // 명령으로 멈춘 셀에는 정비·보정을 새로 걸지 않는다 (수리 요청은 접수)
+    this.fos?.validate(st, kind, true);   // 셀 OCS 명령 검증 (정밀조립 셀)
     st.request = { st, kind, readyAt: this.time + delay, tech: null };
     this.requests.push(st.request);
     this.fac?.maintenance(st, kind);   // FAC: 정비요청 (긴급 / 예방)
@@ -1323,7 +1376,8 @@ export class Simulation {
   }
 
   selfCalibrate(st) {
-    if (st.request || st.state === 'DOWN' || st.state === 'MAINT' || this.cmd.stationGate(st)) return false;
+    if (st.request || st.state === 'DOWN' || st.state === 'MAINT' || this.cmd.stationGate(st)) { this.fos?.validate(st, 'selfcal', false, st.request ? '거부 — 정비·보정 진행·대기 중' : this.cmd.stationGate(st) ? '거부 — 현장 명령으로 정지 중 (인터록)' : '거부 — 복구(RECOVER) 중'); return false; }
+    this.fos?.validate(st, 'selfcal', true);
     st.request = { st, kind: 'cal', self: true };
     const o = this.orch, inc = o.open('quality', `cal:${st.id}`, `${st.name} 공정 편차`, st.name, { cellResolved: true });
     o.step(inc, 'field', 'detect', `SPC 공정능력 Cpk 저하 감지 (드리프트 ${(st.drift * 100).toFixed(0)}%)`);
@@ -1440,16 +1494,47 @@ export class Simulation {
     let st = list[q.round % list.length];
     for (let k = 0; k < list.length && taken.has(st); k++) st = list[++q.round % list.length];
     q.round += 1; q.target = st;
-    q.setTask(`순찰 점검 → ${st.name}`, [
-      { go: localLoc(st.def, st.ammrRacks?.some((r) => r.mode === 'x' && r.dir > 0 && r.side > 0) ? 1.95 : 3.0, SVC_Z, st.name) },   // 정비 위치(0.9)와 떨어진 셀 옆 모서리에서 점검 (그 모서리에 AMMR 부품 선반이 있으면 안쪽으로)
-      { do: () => { q.scanning = st; } },
-      { wait: 4, done: () => { q.scanning = null; this.patrolScan(q, st); } },
-    ]);
+    // 꼼꼼한 순찰: 셀 가장자리를 따라 점검 자리 2~3곳을 차례로 — 자리마다 점검 항목이 다르다 (열화상 · 진동 · 소음·누설)
+    // 공정 방해 금지: 자리로 옮기기 전에 그 자리 1.6m 안에 AMR·지게차·사람·다른 로봇이 있으면 비킬 때까지 기다린다(최대 25초) · 정비 중인 정비 자리는 건너뛴다
+    // 다음 자리가 해결 안 된 현장 이벤트(누유 · 연기 등) 반경 안이면 해결될 때까지 그 자리로 가지 않는다 (자리 사이는 곧게 걸어 진로 우회가 없다)
+    const pts = this.patrolPoints(st), steps = [];
+    pts.forEach((p, i) => {
+      if (i) { let w0 = null; steps.push({ until: () => { w0 ??= this.time; return !this.hazardAt(p.x, p.z, 0.6) && (this.patrolClear(q, p) || this.time - w0 > 25); }, task: `순찰 점검 대기 — ${st.name} (공정 우선)` }); }
+      steps.push(i ? { go: p, via: [] } : { go: p }, { do: () => { q.scanning = st; q.scanItem = p.item; } }, { wait: p.secs, done: () => { (q.scanItems ??= []).push(p.item); } });
+    });
+    steps.push({ do: () => { q.scanning = null; q.scanItem = null; this.patrolScan(q, st, q.scanItems ?? []); q.scanItems = []; } });
+    q.setTask(`순찰 점검 → ${st.name} (${pts.length}곳)`, steps);
   }
-  patrolScan(q, st) {
-    st.lastScan = this.time;
+  // 순찰 점검 자리 (셀 가장자리를 따라): 점검 자리(셀 옆 모서리) → 정비 자리(svc · 정비 중이면 빼고) → 그 반대편 — 모두 셀 판 밖 같은 줄 위
+  patrolPoints(st) {
+    const P0 = this.patrolSpot(st), S = svcLoc(st), out = [{ ...P0, item: '로봇 관절·감속기 열화상', secs: 5 }];
+    const special = this.zone && (st.id === 'SORT' || st.id === 'PACK');   // 부품분류(키팅 구역)·검사·포장(포장대)은 셀 앞이 설비 — 두 자리만
+    if (!st.techOnSite && !st.request && Math.hypot(S.x - P0.x, S.z - P0.z) > 0.8) out.push({ ...S, aisle: P0.aisle, item: '제어반·모터 진동 · 전류', secs: 5 });
+    if (!special) {   // 반대편: 정비 자리에서 점검 자리 반대쪽으로 같은 거리
+      const dx = S.x - P0.x, dz = S.z - P0.z, L = Math.hypot(dx, dz);
+      if (L > 0.8) { const k = Math.min(2.0, L) / L; out.push({ x: S.x + dx * k, z: S.z + dz * k, aisle: P0.aisle, name: P0.name, item: '배관·케이블 · 소음(누설)', secs: 5 }); }
+    }
+    return out;
+  }
+  // 점검 자리가 비었나 (공정 이동체 우선): 1.6m 안에 다른 이동체(AMR · 지게차 · 사람 · 휴머노이드 · 다른 사족보행)가 없으면
+  patrolClear(q, p) {
+    for (const m of this.movers) { if (m === q || m.id === q.id) continue; if (Math.hypot(m.x - p.x, m.z - p.z) < 1.6) return false; }
+    return true;
+  }
+  // 셀 순찰 점검 자리: 정비 위치(0.9)와 떨어진 셀 옆 모서리(3.0m) — 그 모서리에 AMMR 부품 선반이 있거나 운반 AMR 길이 1.2m 안으로 지나면 안쪽(1.95m)으로
+  // (분류셀 출구에서 도어트림 줄로 비스듬히 오르는 AMR 길이 모서리 자리 0.85m 옆을 지나, 서 있는 사족보행 다리가 지나가는 AMR 차체에 닿는다)
+  patrolSpot(st) {
+    if (this.zone && st.id === 'SORT') return localLoc(st.def, -3.4, 2.4, st.name);   // 부품분류셀: 셀 앞은 키팅 구역(키트 컨베이어 · 검증 아치) — 셀 서쪽 모서리 밖 (정비 자리 −3.0 · 1.6 옆)
+    if (this.zone && st.id === 'PACK') return localLoc(st.def, 3.5, SVC_Z, st.name);   // 검사·포장셀: 정비 자리(뚜껑 받침 동쪽 2.6) 옆
+    const at = (x) => localLoc(st.def, x, SVC_Z, st.name), p = at(3.0);
+    const seg = (a, b) => { const vx = b.x - a.x, vz = b.z - a.z, L = vx * vx + vz * vz || 1, t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.z - a.z) * vz) / L)); return Math.hypot(p.x - a.x - vx * t, p.z - a.z - vz * t); };
+    const nearAmr = this.conveyors.some((c) => c.path?.some((k, i) => i > 0 && seg(c.path[i - 1], k) < 1.2));
+    return st.ammrRacks?.some((r) => r.mode === 'x' && r.dir > 0 && r.side > 0) || nearAmr ? at(1.95) : p;
+  }
+  patrolScan(q, st, items = []) {
+    st.lastScan = this.time; st.scanItems = items;
     this.stats.scans = (this.stats.scans ?? 0) + 1;
-    const rec = (result) => { (this.scanLog ??= []).push({ t: this.time, by: q.id, st: st.name, health: Math.round(st.health), drift: Math.round(st.drift * 100), result }); if (this.scanLog.length > 60) this.scanLog.shift(); if (result !== '정상' && result !== '점검 생략') this.stats['scan_' + result] = (this.stats['scan_' + result] ?? 0) + 1; };
+    const rec = (result) => { (this.scanLog ??= []).push({ t: this.time, by: q.id, st: st.name, health: Math.round(st.health), drift: Math.round(st.drift * 100), result, items: items.length }); if (this.scanLog.length > 60) this.scanLog.shift(); if (result !== '정상' && result !== '점검 생략') this.stats['scan_' + result] = (this.stats['scan_' + result] ?? 0) + 1; };
     if (st.request || st.state === 'DOWN' || st.state === 'MAINT') return rec('점검 생략');
     // 혼합형 다중 에이전트: 순찰 보고는 정비·품질 에이전트 제안으로 메인 조정자에 올라간다 (agentHub) — 단일 에이전트는 바로 처리
     if (st.health < this.mode.pmThreshold + this.mode.scanPm && this.agentHub?.report({ kind: 'pm', st, prio: 5, critical: st.health <= this.mode.pmThreshold - 7, why: `${q.id} 열화상·진동 스캔 — 건강도 ${st.health.toFixed(0)}%`, by: 'maint', source: q.id })) {
@@ -1521,7 +1606,7 @@ export class Simulation {
       if (obs.carriers >= 2) dec += ` · 셀 앞 AMR ${obs.carriers}대 정체 → 투입 보류 유지`;
     } else if (inc.type === 'field') {
       const t = inc.ev?.type;
-      dec = t === 'leak' ? '누유 범위 확정 → 청소 범위·우회 경로 확정, 대응 휴머노이드에 위치 전달' : t === 'smoke' ? '열·연기 확산 없음 확인 → 보호정지는 가장 가까운 셀만 유지' : t === 'intrusion' ? '진입자 위치 추적 → 감속 구역 유지 · 원격 관제 경보' : '물체 위치 확정 → 제거 경로 전달';
+      dec = t === 'leak' ? '누유 범위 확정 → 청소 범위·우회 경로 확정, 대응 휴머노이드에 위치 전달' : t === 'smoke' ? '열·연기 확산 없음 확인 → 보호정지는 가장 가까운 셀만 유지' : t === 'intrusion' ? '진입자 위치 추적 → 감속 구역 유지 · 사족보행 거리 두고 추적 · 원격 관제 경보' : '물체 위치 확정 → 제거 경로 전달';
     } else if (inc.type === 'supply') dec = `입고 트럭 미도착 확인 → 공급 차질 확정 · 안전재고 운송 우선`;
     else if (inc.type === 'parts') dec = '선반 결품 확인 → 보충 우선순위 상향';
     o.step(inc, 'orch', 'decide', `판단 보강(${o.name} · 드론 영상): ${dec}`);
@@ -1549,11 +1634,16 @@ export class Simulation {
     return ev;
   }
   // 로봇 카메라 영상에서 처음 인식했을 때 (by: 이동체·로봇 이름, conf: 추론 신뢰도)
-  detectFieldEvent(ev, by, conf) {
-    if (ev.detected || ev.cleared) return;
-    ev.detected = true; ev.detectedBy = by; ev.conf = conf; ev.tDetect = this.time;
+  detectFieldEvent(ev, by, conf, ref = null) {
+    if (ev.detected || ev.cleared || ev.quiet) return;   // quiet: 토리 인시던트 예시가 「AI 감지」 단계 전까지 감지를 막아 둔 이벤트
+    ev.detected = true; ev.detectedBy = by; ev.conf = conf; ev.tDetect = this.time; ev.detRef = ref;   // ref: 감지한 카메라 (로봇 카메라 · CCTV) — 현장 대응 팝업이 그 영상을 띄운다
+    { const dm = ref?.type === 'mover' ? this.movers.find((m) => m.id === ref.id) : ref?.type === 'cctv' ? this.cctv?.cams.find((c) => c.id === ref.id) : null; ev.detDist = dm ? Math.round(Math.hypot(dm.x - ev.x, dm.z - ev.z) * 10) / 10 : null; }   // 감지 당시 카메라까지 거리 (팝업 「감지 거리」)
     const o = this.orch, inc = o.open('field', `ev:${ev.id}`, `현장 이벤트 · ${FIELD_EVENTS[ev.type].label}`, by, { where: { x: ev.x, z: ev.z }, prio: FIELD_EVENTS[ev.type].prio ?? 2 });
     inc.ev = ev;
+    // 감지 로봇 → 서버: 감지 이벤트(추론 결과 · 위치) 바로 · 앞뒤 10초 영상 클립은 10초 뒤
+    const det = ref?.type === 'cctv' ? `cctv.${ref.id}` : by;
+    this.fieldTx(ev, 'detect', det, 'detect', { incident: inc.id, type: ev.type, label: FIELD_EVENTS[ev.type].label, cls: FIELD_EVENTS[ev.type].cls, conf: Math.round(conf * 100) / 100, x: Math.round(ev.x * 100) / 100, z: Math.round(ev.z * 100) / 100, severity: ev.severity });
+    o.later(10, () => this.fieldTx(ev, 'detect', det, 'clip', { incident: inc.id, codec: 'H.264', resolution: ref?.type === 'cctv' ? '1920x1080' : '1280x720', seconds: 20, from: Math.round((ev.tDetect - 10) * 10) / 10, to: Math.round((ev.tDetect + 10) * 10) / 10, bytes: ref?.type === 'cctv' ? 10_400_000 : 6_100_000 }));
     ev.inc = inc;
     o.step(inc, 'field', 'detect', `${by} 카메라 AI 추론 — ${FIELD_EVENTS[ev.type].cls} 신뢰도 ${conf.toFixed(2)}`);
     o.step(inc, 'cell', 'self', ev.type === 'intrusion' ? '자체 조치: 주변 로봇 협동 감속 · 접근 금지 구역 표시' : '자체 조치: 감지 로봇 감속·우회 · 해당 구역 표시');
@@ -1580,6 +1670,7 @@ export class Simulation {
     } else if (E.response === 'inspect') {
       const q = this.quads.slice().sort((a, b) => Math.hypot(a.x - ev.x, a.z - ev.z) - Math.hypot(b.x - ev.x, b.z - ev.z))[0];
       if (q) {
+        q.scanning = null; q.scanItem = null; q.scanItems = [];   // 순찰 점검 중이었으면 그 점검은 그만둔다
         q.setTask(`${E.task} → ${near.name} 부근`, [{ go: loc }, { do: () => { q.scanning = near; o.step(inc, 'exec', 'act', `${q.id} 현장 도착 · 열화상·가스 센서 점검`); } }, { wait: 6, done: () => {
           q.scanning = null; ev.cleared = true; ev.tClear = this.time;
           this.log('ok', `${E.label} 확인 — 이상 없음`, { obs: `${q.id} 열화상·가스 센서 점검: 발열·연소 흔적 없음 (스팀 오인 추정)`, act: '알람 해제' });
@@ -1598,8 +1689,12 @@ export class Simulation {
         act += ` · ${fx.id} 소화기 챙겨 현장 대기${was ? ` (P1 화재 우선 — "${was}" 중단 후 재개)` : ''}`;
       }
     } else {
-      ev.until = this.time + 60;
-      act = '주변 셀 안전 감속 25% 긴급 명령 · 접근 금지 구역 설정, 원격 관제 요원 호출';
+      // 사람 진입: 진입자는 통로를 따라 건물 앞 개방면으로 나간다(startIntruder) — 가장 가까운 사족보행이 4m 거리를 두고 따라가며 행동 · 동선을 보고(startEscort)
+      ev.until = this.time + 300;   // 안전장치: 5분 안에 나가지 않으면 원격 관제 요원이 확인했다고 보고 닫는다
+      const q0 = this.pickEscort(ev);
+      this.startIntruder(ev, q0);
+      const q = this.startEscort(ev, inc, q0);
+      act = `주변 셀 안전 감속 25% 긴급 명령 · 접근 금지 구역 설정, 원격 관제 요원 호출${q ? ` · ${q.id} 출동 — ${ESCORT_GAP}m 거리를 두고 진입자 추적 · 행동 · 동선 보고` : ' · CCTV로 진입자 추적'}`;
     }
     o.step(inc, 'orch', 'decide', `우선순위 ${PRIORITY[P].label}${P === 1 ? ' — 최우선 처리 (예지정비·재보정 보류, 대응 자원 선점)' : ' — 생산·효율 작업보다 먼저'} · 판단(${o.name}): ${E.response === 'clean' ? '작업 경로 안전 위협 — 즉시 제거' : E.response === 'inspect' ? '화재 초기 징후 가능성 — 근접 확인' : '무인 구역 사람 진입 — 안전 우선'}`);
     o.step(inc, 'orch', 'command', `명령: ${act || '대응 자원 없음 — 원격 관제 호출'}`);
@@ -1656,11 +1751,40 @@ export class Simulation {
   }
   // CCTV 배치 (사각지대 없는 배치 — 라인 배치가 같으면 캐시)
   get cctv() { return (this._cctv ??= planCCTV(this)); }
-  updateFieldEvents() {
+  // 현장 로봇 → 서버 업링크 기록 — UNS {존}/_field/{로봇}/detect · clip · ack · status · track · done (현장 대응 팝업 「서버 전송」이 같은 기록을 보여 준다)
+  fieldTx(ev, role, robot, kind, body) {
+    this.fieldTxSeq = (this.fieldTxSeq ?? 0) + 1;
+    const mv = this.movers.find((x) => x.id === robot || x.uid === robot);   // 토픽은 자산 ID(uid · 영문) — 이름(id)은 본문에
+    const m = { seq: this.fieldTxSeq, t: this.time, ev: ev.id, zone: 'main', role, robot: mv?.id ?? String(robot), uid: mv?.uid ?? String(robot), kind, body };
+    m.bytes = JSON.stringify(body).length + 80;   // MQTT 고정 헤더 · 토픽 · 속성 몫 대략
+    (this.fieldTxLog ??= []).push(m); if (this.fieldTxLog.length > 400) this.fieldTxLog.shift();
+    (ev.tx ??= []).push(m); if (ev.tx.length > 80) ev.tx.shift();
+    return m;
+  }
+  // 대응 · 추적 로봇 상태를 2초마다 서버로 (위치 · 속도 · 배터리 · 현장까지 거리 — 추적 중이면 진입자 거리 · 행동 · 동선)
+  fieldStatus(ev) {
+    const m = this.movers.find((x) => x.id === ev.responder); if (!m) return;
+    const E = ev.escort?.q === m ? ev.escort : null, role = E ? 'escort' : 'respond', r2 = (v) => Math.round(v * 100) / 100;
+    if (!ev.txAck) { ev.txAck = true; this.fieldTx(ev, role, m.id, 'ack', { incident: ev.inc?.id, accepted: true, task: m.task ?? null }); }
+    const d = Math.hypot(m.x - ev.x, m.z - ev.z);
+    const body = { incident: ev.inc?.id, kind: m.kind, task: m.task ?? null, x: r2(m.x), z: r2(m.z), heading: Math.round(((m.heading ?? 0) * 180 / Math.PI + 360) % 360), speed: m.moving ? r2(m.speed ?? 0) : 0, battery: Math.round(m.battery ?? 100), distToEvent: r2(d) };
+    if (E) {
+      const W = ev.walk;
+      Object.assign(body, { phase: E.phase, gap: r2(d), minGap: E.minGap != null && E.minGap < 99 ? r2(E.minGap) : null, keepGap: ESCORT_GAP, person: { x: r2(ev.x), z: r2(ev.z), state: W?.done ? 'left' : W?.phase ?? null, walked: r2(W?.dist ?? 0), trail: ev.trail?.length ?? 0, exit: W ? (W.exitX === RIGHT ? 'right' : 'left') : null }, reports: ev.acts?.length ?? 0 });
+    }
+    this.fieldTx(ev, role, m.id, 'status', body);
+  }
+  updateFieldEvents(dt = 0, mdt = dt) {
     if (!this.fieldEvents?.length) return;
+    for (const ev of this.fieldEvents) if (!ev.cleared && ev.walk) { this.updateIntruder(ev, dt); this.updateEscort(ev, mdt); }
+    for (const ev of this.fieldEvents) {
+      if (ev.detected && ev.responder && !ev.cleared && this.time - (ev.txT ?? -9) >= 2) { ev.txT = this.time; this.fieldStatus(ev); }
+      if (ev.cleared && ev.responder && !ev.txDone) { ev.txDone = true; this.fieldTx(ev, ev.escort ? 'escort' : 'respond', ev.responder, 'done', { incident: ev.inc?.id, result: 'cleared', duration: Math.round(this.time - (ev.tDetect ?? ev.t0)), ...(ev.escort ? { walked: Math.round(ev.walk?.dist ?? 0), trail: ev.trail?.length ?? 0, reports: ev.acts?.length ?? 0, minGap: ev.escort.minGap != null && ev.escort.minGap < 99 ? Math.round(ev.escort.minGap * 100) / 100 : null, joined: ev.escort.phase === 'follow' } : {}) }); }
+    }
     for (const ev of this.fieldEvents) {
       if (!ev.cleared && ev.until && this.time >= ev.until) {
         ev.cleared = true; ev.tClear = this.time; this.log('ok', `${ev.label} 해소`, { obs: '진입자 구역 이탈 확인', act: '로봇 정상 속도 복귀' });
+        if (ev.escort && ev.escort.phase !== 'follow') { const q = ev.escort.q; q.path = null; q.steps = [{ do: () => this.escortEnd(ev) }]; }   // 합류 전에 나갔으면 합류하러 가던 길을 멈추고 순찰로
         this.orch.step(ev.inc, 'exec', 'act', '진입자 구역 이탈 확인');
         this.resumeCells(ev, ev.inc, '안전 확인 · 인시던트 종료');
       }
@@ -1669,14 +1793,161 @@ export class Simulation {
     this.fieldEvents = this.fieldEvents.filter((e) => !e.cleared || this.time - e.tClear < 2);
   }
 
+  // ── 사람 진입: 진입자 이동 · 사족보행 추적 보고 ─────────────────
+  // 진입자: 그 자리에서 9초 두리번거린 뒤 통로(F · B)로 나와, 통로를 따라 건물 앞 개방면(EXITS — 오른쪽 세로 통로 끝 · 물류 확장동 앞)으로 나간다.
+  //   나가는 길 4가지(출구 왼쪽 · 오른쪽 × 앞 · 뒤 통로) 중 추적 로봇과 가장 멀리 떨어진 길 — 로봇과 마주치지 않는다 (로봇은 뒤에서 따라온다)
+  //   통로까지 곧게 나가는 길이 셀을 가로지르면 셀 사이 빈 곳으로 먼저 비켜선다 · 가는 길 35~55% 지점에서 셀 앞에 8초 멈춰 선다 · 나가면 이벤트가 닫힌다(until) · 사족보행은 뒤로 돌아와(2.5m/s) 합류 지점에 닿은 뒤 동선을 따라 따라잡아 4m 안팎에서 합류(포착)
+  startIntruder(ev, q = null) {
+    const hit = (a, b) => this.stations.some((st) => { for (let t = 0; t <= 1; t += 0.05) { const x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t; if (Math.abs(x - st.x) < 2.6 && Math.abs(z - (st.z ?? 0)) < 2.6) return true; } return false; });
+    // 통로 차로(가는 쪽 차로) → 출구 쪽 세로 통로 → 앞쪽 통로 → 출구: 뒤 통로로 나오면 세로 통로를 타고 앞으로, 왼쪽 출구는 앞쪽 통로를 x −40까지 더 간다
+    const plan = (az, E, dx) => {
+      const s0 = { x: ev.x + dx, z: ev.z }, sg = Math.sign(E.col - s0.x) || 1, zl = AISLE[az] + (sg >= 0 ? -LANE : LANE), P = [{ x: ev.x, z: ev.z }, ...(dx ? [s0] : []), { x: s0.x, z: zl }];
+      if (E.x === E.col) P.push({ x: E.col, z: zl });
+      else { const zf = AISLE.F + (Math.sign(E.x - E.col) >= 0 ? -LANE : LANE); if (az !== 'F') P.push({ x: E.col, z: zl }, { x: E.col, z: zf }); else P.at(-1).z = zf; P.push({ x: E.x, z: zf }); }
+      P.push({ x: E.x, z: E.z });
+      return P;
+    };
+    const away = (P) => { if (!q) return 99; let m = 99; for (let k = 0; k + 1 < P.length; k++) for (let t = 0; t <= 1; t += 0.1) m = Math.min(m, Math.hypot(P[k].x + (P[k + 1].x - P[k].x) * t - q.x, P[k].z + (P[k + 1].z - P[k].z) * t - q.z)); return m; };
+    const len = (P) => P.slice(1).reduce((a, p, k) => a + Math.hypot(p.x - P[k].x, p.z - P[k].z), 0);
+    let best = null;
+    for (const E of EXITS) for (const az of ['F', 'B']) for (const dx of [0, 1.5, -1.5, 3, -3, 4.5, -4.5, 6, -6, 8, -8]) {
+      const P = plan(az, E, dx), li = dx ? 2 : 1;
+      if (hit(P[0], P[1]) || (dx && hit(P[1], P[2]))) continue;
+      const sc = Math.min(away(P), 8) * 10 - len(P) * 0.1 - Math.abs(dx);   // 로봇과 8m 이상 떨어지면 충분 — 그다음은 짧은 길 · 작은 옆걸음
+      if (!best || sc > best.sc) best = { P, li, az, E, sc };
+      break;   // 이 통로 · 출구는 옆걸음이 가장 작은 것 하나만
+    }
+    best ??= { P: plan('F', EXITS[0], 0), li: 1, az: 'F', E: EXITS[0] };
+    const pts = best.P, L = len(pts);
+    ev.walk = { pts, k: 1, laneIdx: best.li, az: best.az, exitX: best.E.col, exit: best.E.key, exitName: best.E.name, phase: 'look', until: this.time + 9, stopAt: L * (0.35 + (this.evRand ?? this.rand)() * 0.2), stopped: false, dist: 0, len: L, t0: this.time, blockT: 0 };
+    ev.trail = [{ t: this.time, x: ev.x, z: ev.z }]; ev.heading = Math.atan2(pts[1].x - ev.x, pts[1].z - ev.z) || 0; ev.acts = [];
+    this.intruderAct(ev, '진입 지점에서 멈춰 주변을 두리번거림');
+  }
+  // 진입자 행동 기록 — 추적 중인 사족보행이 보고한다 (합류 전에는 CCTV 추적으로)
+  intruderAct(ev, what) {
+    (ev.acts ??= []).push({ t: this.time, what, x: ev.x, z: ev.z });
+    const E = ev.escort, by = E?.phase === 'follow' ? `${E.q.id} 보고` : 'CCTV 추적';
+    if (E?.phase === 'follow') this.fieldTx(ev, 'escort', E.q.id, 'track', { incident: ev.inc?.id, action: what, person: { x: Math.round(ev.x * 100) / 100, z: Math.round(ev.z * 100) / 100 }, gap: Math.round(Math.hypot(ev.x - E.q.x, ev.z - E.q.z) * 100) / 100, n: ev.acts.length });   // 추적 로봇의 행동 · 동선 보고
+    this.orch.step(ev.inc, 'exec', 'act', `${by}: 진입자 ${what}`);
+    this.log('info', `진입자 행동 · ${what}`, { obs: `${by} (${ev.x.toFixed(1)}, ${ev.z.toFixed(1)})`, act: E ? `${E.q.id} ${ESCORT_GAP}m 거리 유지 추적` : '관제 요원 확인' });
+  }
+  updateIntruder(ev, dt) {
+    const W = ev.walk; if (!W || W.done || dt <= 0) return;
+    if (this.time >= W.until) {
+      if (W.phase !== 'walk') { W.phase = 'walk'; this.intruderAct(ev, W.stopped ? '다시 걷기 시작 — 출구 쪽으로' : `${W.az === 'F' ? '앞 통로' : '뒤 통로'}로 나와 출구(${W.exitName}) 쪽으로 걷기 시작`); }
+      let rem = WALK_V * dt;
+      while (rem > 0 && W.k < W.pts.length) {
+        const p = W.pts[W.k], dx = p.x - ev.x, dz = p.z - ev.z, d = Math.hypot(dx, dz);
+        if (d < 1e-3) { W.k++; continue; }
+        // 바로 앞(0.9m)에 로봇이 서 있으면 잠시 선다 — 4초가 지나면 비켜 지나간다
+        const ax = ev.x + (dx / d) * 0.9, az = ev.z + (dz / d) * 0.9;
+        if (W.blockT < 4 && this.movers.some((m) => m !== ev.escort?.q && Math.hypot(m.x - ax, m.z - az) < 0.7)) { W.blockT += dt; break; }
+        W.blockT = 0; ev.heading = Math.atan2(dx, dz);
+        const st = Math.min(rem, d); ev.x += (dx / d) * st; ev.z += (dz / d) * st; rem -= st; W.dist += st;
+        if (st >= d) W.k++;
+        if (!W.stopped && W.dist >= W.stopAt) {
+          W.stopped = true; W.phase = 'stop'; W.until = this.time + 8;
+          const c = [...this.processing].sort((a, b) => Math.hypot(a.x - ev.x, a.z - ev.z) - Math.hypot(b.x - ev.x, b.z - ev.z))[0];
+          ev.heading = c ? Math.atan2(c.x - ev.x, c.z - ev.z) : ev.heading; W.stopName = c?.name;
+          this.intruderAct(ev, `${c?.name ?? '셀'} 앞에서 멈춰 설비 쪽을 바라봄 (8초)`);
+          break;
+        }
+      }
+    }
+    if (this.time - ev.trail.at(-1).t >= 1) ev.trail.push({ t: this.time, x: ev.x, z: ev.z });
+    if (W.k >= W.pts.length && !W.done) { W.done = true; this.intruderAct(ev, `${W.exitName}으로 건물 밖 이탈`); ev.until = this.time; }
+  }
+  // 추적 사족보행: 가장 가까운 것(배터리 20% 이상)
+  pickEscort(ev) { return this.quads.filter((k) => k.battery > 20).sort((a, b) => Math.hypot(a.x - ev.x, a.z - ev.z) - Math.hypot(b.x - ev.x, b.z - ev.z))[0] ?? null; }
+  // 진입자 뒤쪽(출구 반대편 세로 통로 → 진입자 통로)으로 들어와 6m 뒤에서 합류한다 — 같은 통로의 앞쪽(출구 쪽)에 있으면 반대 통로로 돌아온다
+  //   뒤쪽 통로가 6m가 안 되면(진입자가 통로 끝 가까이) 그 세로 통로에서 6m 떨어져 기다린다 · 합류까지 2.5m/s, 따라갈 때는 진입자가 지나간 길(꼭짓점)을 그대로 밟는다
+  startEscort(ev, inc, q) {
+    const W = ev.walk; if (!q || !W) return null;
+    const az = W.az, other = az === 'F' ? 'B' : 'F', lane = W.pts[W.laneIdx], backX = W.exitX === RIGHT ? LEFT : RIGHT, sb = Math.sign(backX - lane.x) || -1;
+    q.scanning = null; q.scanItem = null; q.scanItems = []; q.target = null;
+    q.setTask(`진입자 추적 · 동선 보고 → ${ev.label}`, []);   // 이동 중이면 지금 자리에서 출발 (setTask가 출발점을 지금 자리로)
+    const qa = laneAisle(q.x, q.z) ?? q.loc?.aisle, behind = qa === az && (q.x - lane.x) * sb > 6, steps = [], pre = [];
+    const jx = lane.x + sb * 6, onLane = (jx - backX) * sb < -1;   // 뒤쪽 6m가 통로 안인가
+    let J;
+    if (onLane) J = { x: jx, z: lane.z, aisle: az, name: '진입자 뒤 합류' };
+    else {   // 세로 통로에서 6m 떨어져 기다린다 (로봇이 오는 쪽) — 따라갈 때 통로 모퉁이를 거쳐 진입자 통로로
+      const zs = Math.sign(q.z - lane.z) || -1, zJ = lane.z + zs * 6, ja = Object.entries(AISLE).sort((a, b) => Math.abs(a[1] - zJ) - Math.abs(b[1] - zJ))[0][0];
+      J = { x: backX, z: zJ, aisle: ja, name: '진입자 뒤 대기 (세로 통로)' }; pre.push({ x: backX, z: lane.z });
+    }
+    if (!behind) {
+      if (qa === az && onLane) steps.push({ go: { x: backX, z: AISLE[other], aisle: other, name: '진입자 뒤로 돌아가는 길' } });
+      if (onLane) steps.push({ go: { x: backX, z: AISLE[az], aisle: az, name: '진입자 추적 합류 (세로 통로)' } });
+    }
+    // 합류 지점에 닿으면 「따라잡기」(chase) — 진입자가 그새 걸어갔으면 2.5m/s로 동선을 따라가 4m 안팎까지 좁힌 뒤에야 합류(포착)로 본다 (멀리서 「현장 도착」이라 하지 않게)
+    steps.push({ go: J }, { do: () => { if (ev.escort && ev.escort.phase === 'approach') ev.escort.phase = 'chase'; } }, { until: () => ev.cleared, task: `진입자 추적 · ${ESCORT_GAP}m 거리 유지 · 행동 · 동선 보고` }, { do: () => this.escortEnd(ev) });
+    q.steps = steps; q.speed0 ??= q.speed; q.speed = ESCORT_V;
+    ev.responder = q.id; ev.escort = { q, phase: 'approach', j: W.laneIdx, pre, lastRep: 0, t0: this.time };
+    return q;
+  }
+  escortJoin(ev) {
+    const E = ev.escort; if (!E || E.phase === 'follow') return;
+    E.phase = 'follow'; E.tJoin = this.time; E.lastRep = this.time; E.q.speed = E.q.speed0 ?? 1.2; E.joinGap = Math.round(Math.hypot(ev.x - E.q.x, ev.z - E.q.z) * 10) / 10;
+    this.orch.step(ev.inc, 'exec', 'act', `${E.q.id} 현장 도착 · 진입자 포착 (거리 ${E.joinGap}m) — ${ESCORT_GAP}m 거리를 두고 추적 · 행동 · 동선 보고 시작`);
+  }
+  updateEscort(ev, dt) {
+    const E = ev.escort; if (!E || ev.cleared) return;
+    const q = E.q, W = ev.walk, gap = () => Math.hypot(ev.x - q.x, ev.z - q.z);
+    if (E.phase === 'approach') {   // 합류 전에 진입자가 4m 안으로 오면 그 자리에서 바로 추적으로 (다가가지 않는다)
+      if (gap() < ESCORT_GAP + 0.5) { q.path = null; q.steps = q.steps.filter((x) => !x.go); q.loc = { x: q.x, z: q.z, aisle: laneAisle(q.x, q.z) ?? W.az, name: '진입자 추적' }; this.escortJoin(ev); }
+      return;
+    }
+    if (dt <= 0) return;
+    let rem = (E.phase === 'chase' || gap() > 8 ? ESCORT_V : 1.2) * dt, moved = false, fwd = false;   // 따라잡는 동안은 2.5m/s
+    while (rem > 1e-4 && gap() > ESCORT_GAP) {
+      const tgt = E.pre?.length ? E.pre[0] : E.j < W.k ? W.pts[E.j] : { x: ev.x, z: ev.z };
+      const dx = tgt.x - q.x, dz = tgt.z - q.z, d = Math.hypot(dx, dz);
+      if (d < 1e-3) { if (E.pre?.length) { E.pre.shift(); continue; } if (E.j < W.k) { E.j++; continue; } break; }
+      const st = Math.min(rem, d, gap() - ESCORT_GAP); if (st <= 1e-4) break;
+      q.x += (dx / d) * st; q.z += (dz / d) * st; q.heading = Math.atan2(dx, dz); q.dist += st; rem -= st; moved = true; fwd = true;
+      if (st >= d - 1e-6) { if (E.pre?.length) E.pre.shift(); else if (E.j < W.k) E.j++; }
+    }
+    // 진입자가 4m 안으로 다가오면(처음부터 가까이 있었을 때 등) 반대쪽으로 물러선다 — 셀 · 건물 밖으로는 물러서지 않는다
+    if (!moved && gap() < ESCORT_GAP - 0.05) {
+      const g0 = gap(), ux = (q.x - ev.x) / (g0 || 1), uz = (q.z - ev.z) / (g0 || 1), stp = Math.min(1.2 * dt, ESCORT_GAP - g0);
+      const free = (x, z) => x > BLDG.x0 + 0.8 && x < BLDG.x1 - 1.2 && z > BLDG.z0 + 1 && z < BLDG.z1 - 1 && !this.stations.some((st) => Math.abs(x - st.x) < 2.4 && Math.abs(z - (st.z ?? 0)) < 2.4);
+      for (const da of [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.5, -1.5]) {   // 곧게 물러설 곳이 셀이면(셀 가장자리 점검 자리에서 만났을 때) 셀 가장자리를 따라 옆으로 비켜난다
+        const c = Math.cos(da), sn = Math.sin(da), vx = ux * c - uz * sn, vz = ux * sn + uz * c, nx = q.x + vx * stp, nz = q.z + vz * stp;
+        if (!free(nx, nz)) continue;
+        q.x = nx; q.z = nz; q.dist += stp; moved = true; E.backed = (E.backed ?? 0) + stp; break;
+      }
+    }
+    q.moving = moved;
+    if (!fwd) q.heading = Math.atan2(ev.x - q.x, ev.z - q.z);   // 서 있거나 물러설 때는 진입자 쪽을 본다
+    if (E.phase === 'chase') { if (gap() <= ESCORT_GAP + 1.0) this.escortJoin(ev); else return; }   // 4m 안팎까지 좁혀야 합류 — 그 전에는 보고하지 않는다 (CCTV 추적)
+    E.minGap = Math.min(E.minGap ?? 99, gap());
+    if (W.phase === 'walk' && this.time - E.lastRep >= 10) {   // 10초마다 위치 · 이동 방향 보고
+      E.lastRep = this.time;
+      const h = ev.heading, dir = Math.abs(Math.sin(h)) > Math.abs(Math.cos(h)) ? (Math.sin(h) > 0 ? '동쪽' : '서쪽') : (Math.cos(h) > 0 ? '남쪽' : '북쪽');
+      const c = [...this.processing].sort((a, b) => Math.hypot(a.x - ev.x, a.z - ev.z) - Math.hypot(b.x - ev.x, b.z - ev.z))[0];
+      const where = ev.z > AISLE.F + 1.4 ? `${W.exitName} 앞` : Math.abs(ev.x - W.exitX) < 1.5 ? `${W.exitX === RIGHT ? '오른쪽' : '왼쪽'} 세로 통로` : `${ev.z > 0 ? '앞 통로' : '뒤 통로'} · ${c?.name ?? ''} 부근`;
+      this.intruderAct(ev, `${where} · ${dir}으로 걷는 중 (${WALK_V}m/s · 누적 ${W.dist.toFixed(0)}m · 거리 ${gap().toFixed(1)}m 유지)`);
+    }
+  }
+  escortEnd(ev) {
+    const E = ev.escort; if (!E || E.ended) return; E.ended = true;
+    const q = E.q, W = ev.walk; q.speed = q.speed0 ?? q.speed;
+    q.loc = { x: q.x, z: q.z, aisle: laneAisle(q.x, q.z) ?? (q.z >= 0 ? 'F' : 'B'), name: '진입자 추적 종료' };   // 지금 자리에서 순찰로 돌아간다
+    const dur = W ? Math.round(this.time - W.t0) : 0;
+    if (E.phase !== 'follow') return this.orch.step(ev.inc, 'exec', 'act', `${q.id} 합류 전 진입자 이탈 — CCTV 추적으로 이탈 확인 (동선 ${W?.dist.toFixed(0) ?? '-'}m · ${dur}초) · 합류 취소 · 순찰 복귀`);
+    this.orch.step(ev.inc, 'exec', 'act', `${q.id} 추적 종료 보고: 진입자 이탈 확인 — 동선 ${W?.dist.toFixed(0) ?? '-'}m · ${dur}초 · 멈춤 ${W?.stopped ? `1회 (${W.stopName ?? '셀'} 앞)` : '없음'} · 행동 ${ev.acts?.length ?? 0}건 · 동선 기록 ${ev.trail?.length ?? 0}점 · 최소 거리 ${(E.minGap ?? 0).toFixed(1)}m`);
+  }
+
   // ── 물류 작업 ─────────────────────────────
+  // 자재창고 원자재 출고 자리: AGV는 컨베이어 옆(롤러 이재) · 유인 지게차는 컨베이어를 보고 포크로 (MINILOAD_OUTS fork)
+  whPick(v) { return v.kind === 'forklift' ? [{ ...LOC.WH, ...MINILOAD_OUTS.wh[0].fork }, -Math.PI / 2] : [LOC.WH, null]; }
   dispatchSupply(v) {
     this.inboundRaw += PALLET_RAW;
+    const [at, face] = this.whPick(v);
     v.setTask('자재 공급', [
-      { go: LOC.WH },
-      { until: () => this.time >= this.supplyDisruptedUntil, task: '출고 대기 (공급 차질)' },
-      { until: () => this.whRaw > 0, task: '창고 재고 대기 (입고 트럭 대기)' },
-      { wait: 4, done: () => { const n = Math.min(PALLET_RAW, this.whRaw); this.whRaw -= n; v.load = { type: 'raw', n }; this.fac?.consume('raw', n, '투입구 (투입 로봇셀)'); } },
+      { go: at },
+      { until: () => this.time >= this.supplyDisruptedUntil, task: '출고 대기 (공급 차질)', face },
+      { until: () => this.whRaw > 0, task: '창고 재고 대기 (입고 트럭 대기)', face },
+      { wait: xferWait(v), face, done: () => { const n = Math.min(PALLET_RAW, this.whRaw); this.whRaw -= n; v.load = { type: 'raw', n }; this.fac?.consume('raw', n, '투입구 (투입 로봇셀)'); } },
       { go: this.loc.SRC },
       { wait: 4, done: () => {
         const n = v.load?.n ?? PALLET_RAW;
@@ -1688,9 +1959,10 @@ export class Simulation {
   // 안전재고 긴급 운송 — 창고 내 별도 보관분이라 출고 중단과 무관하게 실을 수 있다
   dispatchSafety(v, n) {
     this.safetyStock -= n; this.inboundRaw += n;
+    const [at, face] = this.whPick(v);
     v.setTask('안전재고 긴급 운송', [
-      { go: LOC.WH },
-      { wait: 4, done: () => { v.load = { type: 'raw', n }; } },
+      { go: at },
+      { wait: xferWait(v), face, done: () => { v.load = { type: 'raw', n }; } },
       { go: this.loc.SRC },
       { wait: 4, done: () => {
         this.rawStock = Math.min(RAW_CAP, this.rawStock + n); this.inboundRaw -= n; v.load = null; this.stats.supplyTrips++;

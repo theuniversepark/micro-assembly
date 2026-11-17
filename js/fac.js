@@ -76,6 +76,12 @@ export class FacLedger {
   equipmentOf(key) { return this.db.equipment.find((e) => e.key === key || e.serial_no === key); }
   move(lines, from, to) { for (const l of lines) { this.quant[from][l.product] -= l.qty; this.quant[to][l.product] += l.qty; } }
 
+  // ── 공장 오더 (FacOS → 정밀조립) — ERPNext 작업지시(Work Order) 연동용 (server/erpnext-bridge.mjs) ─────────────────
+  // 배정: 양품 목표 · 혼류 비중 · 납기 / 종료: 제품별 양품 · 폐기 · 고유 투입 (공장 오케스트레이터(FacOS)가 부른다 — 없으면 오더 이벤트도 없다)
+  order(type, o, extra = {}) { this.emit({ type, key: o.id, target: o.target, due: o.due, ...extra }); }
+  // 품질 기록 (js/serial.js · capa.js · trace.js) — ERPNext 품질 모듈 연동용: 샘플 지정 · 판정 · 처분 · 로트 선별 · 체결 NG · 8D
+  qual(type, payload) { this.emit({ type, ...payload }); }
+
   // ── 발주 · 입고 ─────────────────
   // WMS 발주 (receiving.js) → 구매오더 확정 + 입고 예정 전표
   purchase(order) {
@@ -147,7 +153,7 @@ export class FacLedger {
   ship(truck, qty, product) {
     if (!this.on || qty <= 0) return;
     let pk = this.byShip.get(truck);
-    if (!pk) { pk = { id: this.db.picking.length + 1, name: this.name('out'), type: 'outgoing', origin: `출하 ${truck.id}`, partner: CUSTOMER, from: 'output', to: 'customer', state: 'assigned', created: this.now(), done: null, truck: truck.id, lines: [] }; this.byShip.set(truck, pk); this.db.picking.unshift(pk); }
+    if (!pk) { pk = { id: this.db.picking.length + 1, name: this.name('out'), type: 'outgoing', origin: `출하 ${truck.id}`, shipment: this.sim.serials?.shipmentId(truck) ?? null, partner: CUSTOMER, from: 'output', to: 'customer', state: 'assigned', created: this.now(), done: null, truck: truck.id, lines: [] }; this.byShip.set(truck, pk); this.db.picking.unshift(pk); }
     const p = product ?? 'doortrim', l = pk.lines.find((x) => x.product === p) ?? (pk.lines.push({ product: p, qty: 0, done: 0, from: 'output', to: 'customer' }), pk.lines.at(-1));
     l.qty += qty; l.done += qty;
   }
@@ -156,7 +162,8 @@ export class FacLedger {
     this.closeWindow();   // 생산 입고를 먼저 확정해야 출고할 재고가 있다
     pk.state = 'done'; pk.done = this.now();
     for (const l of pk.lines) { this.quant.output[l.product] -= l.done; this.quant.customer[l.product] += l.done; }
-    this.emit({ type: 'delivery.done', key: pk.name, partner: CUSTOMER, origin: pk.origin, lines: pk.lines.map(({ product, done }) => ({ product, qty: done, from: 'output', to: 'customer' })) });
+    const C = pk.shipment ? this.sim.serials?.shipmentContent(pk.shipment) : null;   // 실린 팔레트 SSCC · 시리얼 (ERPNext 출하 전표 — EPCIS 업로드를 기다리지 않음)
+    this.emit({ type: 'delivery.done', key: pk.name, partner: CUSTOMER, origin: pk.origin, ...(pk.shipment ? { shipment: pk.shipment, sscc: C?.sscc ?? [], serials: C?.serials ?? [] } : {}), lines: pk.lines.map(({ product, done }) => ({ product, qty: done, from: 'output', to: 'customer' })) });
     this.note('out', `${pk.name} 출고 확정 — ${pk.lines.map((l) => `${FAC_PRODUCTS[l.product].code} ${l.done}`).join(' · ')} → ${truck.id}`);
   }
 
