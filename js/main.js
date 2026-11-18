@@ -38,7 +38,7 @@ import { AI_MODELS } from './cctv.js';
 import { NR, STACK, LAT, UE_LOAD, maxRobots } from './net5g.js';
 import { setAasVersion, AAS_VERSIONS } from './aas.js';
 import { OrchView } from './orchview.js';
-import { UnsNamespace } from './uns.js';
+import { UnsNamespace, unsPostVia } from './uns.js';
 import { FieldPops } from './fieldpop.js';
 import { FLEET_RANGE, FLEET_NAMES, SHARED_SPACE_LIMIT, fleetAdvice, predictFleet, predictFleetCounts } from './fleet.js';
 import { SEC_LAYERS, SEC_KPI, SEC_THREATS, SEC_LANES, SEC_STAGES, SEC_ACTORS } from './security.js';
@@ -115,16 +115,15 @@ const hub = new DataHub();
 // ── EPCIS 저장소 (GS1 EPCIS 2.0) ─────────────────
 // 시리얼 서비스(js/serial.js) 이벤트 → 표준 이벤트(js/epcis.js) → 5초마다 앱 내장 저장소(서버 /api/epcis/v1 — 파일에 계속 보관 · 외부 저장소 전송 선택)
 // 서버가 없는 화면(웹 버전 · 공유 페이지)은 브라우저 메모리 저장소 (새로고침 시 초기화). 조회는 품질 추적 「🏷 시리얼·출하」
-// 시리얼 번호는 단계를 바꿔 시뮬레이션을 새로 만들어도 이어진다 (SERIAL_SEQ 공유) · 앱은 시작 때 저장소에 남은 오늘 마지막 번호를 받아 그 뒤부터 (재사용 금지)
+// 시리얼 번호는 단계를 바꿔 시뮬레이션을 새로 만들어도 이어진다 · 웹 버전은 이 화면의 카운터(SERIAL_SEQ 공유) · 앱은 서버가 예약해 준 번호 범위 안에서만 발행한다 (epcisAttach — 재사용 금지)
 const SERIAL_SEQ = {}, WIP_SEQ = {}, SHIP_CTR = { pal: 0, ship: 0 }, epcisLocal = new EpcisStore({ max: 60000 });
-const epcisSt = { retry: [], sent: 0, failed: 0, lastError: null, server: null, busy: false };
-let serialBaseAsked = false;
+const epcisSt = { retry: [], sent: 0, failed: 0, lastError: null, server: null, busy: false, dropped: 0 };
 function epcisCollect() {
   const H = sim?.serials; if (!H) return;
   const evs = H.drain().map((e) => epcisEvent(H, e, (t) => hub.iso(t))).filter(Boolean);   // 지금 실행의 기준 시계로 (단계 전환 전에 먼저 거둔다)
   if (!evs.length) return;
   if (hub.noServer) { epcisLocal.capture(evs); epcisSt.sent += evs.length; return; }
-  epcisSt.retry.push(...evs); if (epcisSt.retry.length > 50000) epcisSt.retry.splice(0, epcisSt.retry.length - 50000);
+  epcisSt.retry.push(...evs); if (epcisSt.retry.length > 50000) { const n = epcisSt.retry.length - 50000; epcisSt.dropped += n; epcisSt.retry.splice(0, n); }   // 서버가 오래 안 되면 오래된 것부터 버린다 — 건수는 화면에 보인다
 }
 async function epcisPump() {
   epcisCollect();
@@ -140,11 +139,11 @@ async function epcisPump() {
 setInterval(() => { epcisPump(); }, 5000);
 function epcisAttach() {
   const H = sim?.serials; if (!H) return;
-  H.serSeq = SERIAL_SEQ; H.wipSeq = WIP_SEQ; H.ctr = SHIP_CTR; H.feedOn = true;   // 팔레트 SSCC · 출하 ID도 이어서
-  if (!hub.noServer && !serialBaseAsked) {
-    serialBaseAsked = true;
-    fetch(`/api/epcis/v1/serial-base?ymd=${H.ymd}`).then((r) => r.json()).then((j) => { for (const [c, n] of Object.entries(j.base ?? {})) SERIAL_SEQ[c] = Math.max(SERIAL_SEQ[c] ?? 0, n); SHIP_CTR.pal = Math.max(SHIP_CTR.pal, j.pal ?? 0); SHIP_CTR.ship = Math.max(SHIP_CTR.ship, j.ship ?? 0); }).catch(() => { serialBaseAsked = false; });
-  }
+  H.wipSeq = WIP_SEQ; H.feedOn = true;
+  if (hub.noServer) { H.serSeq = SERIAL_SEQ; H.ctr = SHIP_CTR; return; }   // 웹 버전: 브라우저 메모리 저장소 기준 — 이 화면의 카운터를 이어 쓴다 (팔레트 SSCC · 출하 ID도)
+  // 앱: 시리얼 · 팔레트 SSCC · 출하 ID 번호는 서버가 예약해 준 범위에서만 (js/serialalloc.js · /api/epcis/v1/serial-reserve) — 빈 카운터를 먼저 붙이면 「오늘 마지막 번호」 응답 전에 1번부터 다시 발행한다.
+  //   범위를 받기 전 · 요청 실패 중에는 발행을 보류했다가 받으면 이어서 발행 · 화면이 여럿(탭 · 앱 두 개)이어도 범위가 겹치지 않는다. 배정기는 hub에 두어 단계 전환 · 리셋해도 이어 쓴다
+  H.useAllocator(hub.serialAlloc ??= H.serverAllocator((...a) => fetch(...a)));
 }
 // 조회: 앱 = 내장 저장소 · 웹 = 브라우저 메모리
 async function epcisQuery(kind, key) {
@@ -288,6 +287,7 @@ function setRender(style) {
   applyLook(); RENDER.swapped = 0; blenderize(scene); trimShadows(scene); releaseOrphans(prev);
 }
 
+let toriRun = null;   // 공장이 새로 시작됐다고 토리에 알림 (토리는 아래에서 만든다 — 그 전의 첫 start()에서는 없음)
 function start(key) {
   const prev = sim ? gpuRefs(scene) : null;   // 전환 전 GPU 자원 (아래 releaseOrphans)
   epcisCollect();   // 이전 실행의 EPCIS 이벤트를 그 실행 기준 시계로 먼저 거둔다
@@ -321,6 +321,7 @@ function start(key) {
     obs: key === 'traditional' ? '작업자 중심 수동 운영, 고정 컨베이어·지게차, 사후보전 체계' : key === 'smart' ? `양쪽 협동로봇 셀·AMR 운반, IoT·MES 연결, 현장 인원 ${sim.peopleOnSite()}명 (출하 지게차 운전 포함)` : '무인 운영 — 휴머노이드 4대(정비 2·부품 보충 2), 사족보행 순찰 2대, AMR·AGV, 고효율 LED 조명',
   });
   renderZoneCard();
+  toriRun?.();   // 안내 중이면 옛 공장의 이벤트 · 제안 · 망 상태를 버리고 멈추거나 새 공장에서 다시 구성 (js/tori.js simChanged)
 }
 
 // ── 정밀조립Zone 카드 (왼쪽 패널 위) ─────────────────
@@ -686,21 +687,22 @@ function pcapVideoTick(rdt) {
   if (!glLost) for (const [key, AP] of hub.assetPcaps) {
     if (!AP.on || AP.video === false || !AP.cam) continue;
     AP.camT += rdt; if (AP.camT < 1) continue; AP.camT = 0;
-    const simT = sim.time, pr = camWall.captureFrame(AP.cam, 160, 120), kind = AP.only.kind;
-    pr?.then((bytes) => { if (!bytes || !AP.on) return; const n0 = hub.pcap; hub.pcap = AP; try { pcapPublishFrame(key, kind, `Robot_${key}`, 160, 120, bytes, simT, {}, AP.only.ip); } finally { hub.pcap = n0; } });
+    const simT = sim.time, s0 = sim, pr = camWall.captureFrame(AP.cam, 160, 120), kind = AP.only.kind;
+    pr?.then((bytes) => { if (!bytes || !AP.on || sim !== s0) return;   // 실행이 바뀐 뒤 끝난 캡처는 버린다 (새 실행의 시계로 이전 시각이 찍힘)
+      const n0 = hub.pcap; hub.pcap = AP; try { pcapPublishFrame(key, kind, `Robot_${key}`, 160, 120, bytes, simT, {}, AP.only.ip); } finally { hub.pcap = n0; } });
   }
   const P = hub.pcap; if (!P.on || P.video === false || glLost) return;
   pcapVidT += rdt; if (pcapVidT < 1) return; pcapVidT = 0;
-  const simT = sim.time, cams = sim.cctv?.cams ?? [];
+  const simT = sim.time, s0 = sim, cams = sim.cctv?.cams ?? [];   // s0: 캡처를 건 실행 — 인코딩 · 읽기가 끝났을 때 실행이 바뀌었으면 버린다
   if (cams.length && !cctvView.lost) {
     const c = cams[pcapCam++ % cams.length], r = cctvView.renderPanel(c.id, pcapCv);
-    if (r) pcapCv.toBlob((bl) => bl?.arrayBuffer().then((ab) => pcapPublishFrame(`CCTV-${c.id}`, 'cam', `CCTV_${c.id}`, 320, 180, new Uint8Array(ab), simT, { Place: r.place, Detections: r.dets.length })), 'image/jpeg', 0.7);
+    if (r) pcapCv.toBlob((bl) => bl?.arrayBuffer().then((ab) => sim !== s0 ? null : pcapPublishFrame(`CCTV-${c.id}`, 'cam', `CCTV_${c.id}`, 320, 180, new Uint8Array(ab), simT, { Place: r.place, Detections: r.dets.length })), 'image/jpeg', 0.7);
   }
   if (camWall.on && camWall.list?.length) {
     const f = camWall.list[pcapBot++ % camWall.list.length], pr = camWall.captureFrame(f.ref, 160, 120);
     const a = f.ref.type === 'mover' ? hub.assets.find((x) => x.mover?.id === f.ref.id) : null, ue = a ? sim.net?.ueOf(a.mover) : null;
     const ca = a ?? hub.assets.filter((x) => x.kind === 'CellRobot' && x.parent === f.ref.stationId)[f.ref.idx ?? 0];
-    pr?.then((bytes) => bytes && pcapPublishFrame(ca ? ca.id : f.ref.stationId ?? 'Cell', ue ? '5g' : 'lan', `Robot_${ca ? ca.id : `${f.ref.stationId}_${f.ref.idx ?? 0}`}`, 160, 120, bytes, simT, {}, ca ? hub.ipOf(ca) : null));
+    pr?.then((bytes) => bytes && sim === s0 && pcapPublishFrame(ca ? ca.id : f.ref.stationId ?? 'Cell', ue ? '5g' : 'lan', `Robot_${ca ? ca.id : `${f.ref.stationId}_${f.ref.idx ?? 0}`}`, 160, 120, bytes, simT, {}, ca ? hub.ipOf(ca) : null));
   }
 }
 // EPCIS 저장소 칸: 앱 = 내장 저장소(파일 보관) + 외부 저장소 전송(선택) · 웹 = 브라우저 메모리
@@ -710,23 +712,26 @@ let unsSince = 0, unsBusy = false, unsSim = null;
 const uns = new UnsNamespace(null, { iso: (t) => hub.iso(t), run: () => hub.runId });
 setInterval(async () => {
   if (unsBusy || !sim) return;
-  if (unsSim !== sim) { unsSim = sim; unsSince = 0; uns.reset(sim); }   // 새 실행은 로그 번호가 1부터 다시 — 이전 실행의 커서를 쓰면 첫 경보 묶음이 빠진다
+  // 사건(결정 · A2A · 명령 · 현장 업링크 · 운영 이벤트 · 품질 표본)은 uns의 대기함(outbox)에 넣고 서버 응답(ACK) 뒤에만 뺀다 — 전송에 실패해도 다음 주기에 같은 key로 다시 (js/uns.js)
+  const isQ = (m) => m.topic.startsWith('metafactory/quality/'), flatEv = (s, k) => [...unsEvents(s, unsSince).messages, ...k.filter(isQ)];
+  if (unsSim !== sim) {   // 새 실행 — 이전 실행에서 아직 거두지 않은 사건을 그 실행 ID로 대기함에 넣은 뒤 넘어간다 (단계 전환 · 리셋 직전 2초분이 빠지지 않게)
+    if (unsSim && !hub.noServer) { const k = unsZoneKpi(unsSim); uns.enqueue(flatEv(unsSim, k), 'flat'); uns.harvest({ kpi: k }); }
+    unsSim = sim; unsSince = 0; uns.reset(sim);   // 새 실행은 로그 번호가 1부터 다시 — 이전 실행의 커서를 쓰면 첫 경보 묶음이 빠진다
+  }
   const tele = unsTelemetry(sim);
   if (hub.noServer) { uns.collect({ telemetry: tele }); uns.broker.on = false; return; }
-  const E = unsEvents(sim, unsSince); unsSince = E.next;
-  const kpi = unsZoneKpi(sim), tree = uns.collect({ telemetry: tele, kpi });
-  // Sparkplug가 켜져 있으면 {존}/{셀}/telemetry는 게이트웨이의 주 호스트가 Sparkplug에서 옮겨 싣는다 — 화면은 평면 토픽만 보낸다(엣지 노드의 원천)
-  const viaSp = !!uns.broker.status?.sparkplug?.on, treeOut = viaSp ? tree.filter((m) => !m.topic.endsWith('/telemetry')) : tree;
-  const messages = [...tele, ...E.messages, ...kpi, ...treeOut]; if (!messages.length) return;   // + Zone OEE · 품질 표본 (js/zonekpi.js)
   unsBusy = true;
   try {
-    // 외부 명령 요청 (camtic/metafactory/main/{셀}/cmd/request) → FacOS 명령 경로 — 결과는 다음 주기 UNS 명령 4단으로
-    const q = await fetch('/api/uns/commands/take', { method: 'POST' }).then((r) => r.json()).catch(() => null);
+    // 외부 명령 요청 (camtic/metafactory/main/{셀}/cmd/request) → FacOS 명령 경로 — 결과는 UNS 명령 4단으로
+    const q = await fetch('/api/uns/commands/take', { method: 'POST' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     for (const c of q?.commands ?? []) uns.applyCommand(c);
-    const r = await fetch('/api/mqtt/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }) });
-    const j = await r.json(); uns.broker.on = !!j.status?.listening; uns.broker.published += treeOut.length; uns.broker.error = null; uns.broker.status = j.status; uns.broker.facos = j.facos ?? null;
-    if (j.status?.uns?.rebirth) uns.rebirth();   // 게이트웨이가 죽음 처리했거나 새로 시작 — 다음 주기에 모든 retain 상태를 다시 발행
-  } catch (e) { uns.broker.error = e.message; uns.rebirth(); /* 서버가 잠시 안 되면 다음 주기에 (상태도 다시) */ } finally { unsBusy = false; }
+    if (unsSim !== sim) return;   // 기다리는 사이 단계 전환 — 다음 주기에 이전 실행분을 거둔다
+    const kpi = unsZoneKpi(sim); uns.enqueue(flatEv(sim, kpi), 'flat'); unsSince = sim.logSeq ?? unsSince;
+    // Sparkplug가 켜져 있으면 {존}/{셀}/telemetry는 게이트웨이의 주 호스트가 Sparkplug에서 옮겨 싣는다 — 화면은 평면 토픽만 보낸다(엣지 노드의 원천)
+    const viaSp = !!uns.broker.status?.sparkplug?.on;
+    // 주기 데이터(평면 설비 요약 · Zone OEE — 다음 주기에 새 값이 가므로 유실 허용) + UNS 상태 + 대기함의 사건 → HTTP 오류 · JSON 오류 응답 · 브로커 꺼짐은 실패로 처리 (사건은 남고 상태만 rebirth)
+    await uns.send(unsPostVia((...a) => fetch(...a)), { periodic: [...tele, ...kpi.filter((m) => !isQ(m))], extra: { telemetry: tele, kpi }, keep: viaSp ? (m) => !m.topic.endsWith('/telemetry') : null });
+  } finally { unsBusy = false; }
 }, 2000);
 // 설비 대시보드 칸 (server/monitor-api.mjs): Docker로 Telegraf → InfluxDB → Grafana 켜기 · 열기 · 끄기
 let monSt = null, monNote = '', monAt = 0, monAskReset = false;   // 데이터 초기화는 화면 안에서 한 번 더 확인 (쌓인 시계열·Grafana 설정 삭제)
@@ -745,17 +750,24 @@ function monHtml() {
 }
 let epcisNote = '';
 function epcisHtml() {
-  const L = epcisSt, S = L.server, F = S?.forward;
+  const L = epcisSt, S = L.server, F = S?.forward, AL = sim?.serials?.allocState?.();   // AL: 서버 번호 범위 배정 상태 (js/serial.js allocState)
   if (hub.noServer) return `<div class="grid2"><span>저장소</span><b>브라우저 메모리 저장소 — 이 브라우저 안에서만 보관 (새로고침 시 초기화)</b>
       <span>저장된 이벤트</span><b>${epcisLocal.count.toLocaleString()}건 · 중복 제외 ${epcisLocal.stats.duplicate}</b></div>
     <div class="dh-note">조회: 품질 추적 「🏷 시리얼·출하」에서 제품을 고른 뒤 「🔎 EPCIS 저장소에서 조회」. 파일: 불량 분석 「⬇ 전체 데이터셋」의 serial_events.jsonld. 외부 EPCIS 저장소(OpenEPCIS · 사내 · 고객사)로 보내기는 맥 앱 · 윈도우 앱에서 할 수 있습니다.</div>`;
   return `<div class="grid2"><span>앱 내장 저장소</span><b>${S ? `<b class="ok">동작 중</b> · 저장 ${S.events.toLocaleString()}건 · 파일 ${kb(S.file)} (데이터 폴더/epcis/events.jsonl · 앱을 다시 켜도 보관)` : '확인 중…'}</b>
-      <span>이번 실행 보냄</span><b>${L.sent.toLocaleString()}건${L.retry.length ? ` · 대기 ${L.retry.length}` : ''}${L.lastError ? ` · <b class="bad">${escH(L.lastError)}</b>` : ''}</b>
+      <span>이번 실행 보냄</span><b>${L.sent.toLocaleString()}건${L.retry.length ? ` · 대기 ${L.retry.length}` : ''}${L.lastError ? ` · <b class="bad">전송 실패 — ${escH(L.lastError)} (5초마다 다시 · 대기 중인 것은 남아 있음)</b>` : ''}${L.dropped ? ` · <b class="bad">대기 한도(5만 건) 초과로 버림 ${L.dropped.toLocaleString()}건</b>` : ''}</b>
+      <span>식별 번호 배정</span><b>${AL ? `${AL.ok ? '<b class="ok">정상</b>' : '<b class="bad">발행 보류</b>'} · ${escH(AL.text)}` : '확인 중…'}</b>
       <span>외부 저장소 주소</span><b><input id="epUrl" class="ep-in" placeholder="예: http://127.0.0.1:8080 (OpenEPCIS) — 비우면 보내지 않음" value="${escH(F?.url ?? '')}" /></b>
       <span>인증 토큰 (선택)</span><b><input id="epKey" class="ep-in" type="password" placeholder="${F?.apiKey ? '저장됨 — 바꿀 때만 입력' : 'Bearer 토큰 — 필요한 저장소만'}" autocomplete="off" /></b>
       <span>외부 전송</span><b><label class="chk"><input type="checkbox" id="epOn" ${F?.enabled ? 'checked' : ''}/> 켜기</label> <button class="ep-btn" data-epcis="test">연결 시험</button> <button class="ep-btn" data-epcis="save">저장</button> <button class="ep-btn" data-epcis="resend" title="외부 저장소에 처음부터 다시 보냅니다 (eventID가 같아 저장소가 중복을 거릅니다)">처음부터 다시 보내기</button>
         ${F && !F.enabled ? ' · 꺼짐 (앱 내장 저장소에만 보관)' : ''}${F?.enabled ? ` · 보냄 ${F.sent.toLocaleString()} · 대기 ${F.pending.toLocaleString()}${F.lastError ? ` · <b class="bad">실패: ${escH(F.lastError)}${F.nextRetryMs ? ` (${Math.ceil(F.nextRetryMs / 1000)}초 뒤 다시)` : ''}</b>` : F.lastOk ? ` · 최근 성공 ${F.lastOk.slice(11, 19)} UTC` : ''}` : ''}</b></div>
     <div class="dh-note">${escH(epcisNote) || '설치 없이 앱 안 저장소에 쌓입니다. 외부 저장소는 전문 실증·고객사 연계 때만 — 주소를 넣고 「연결 시험」 → 「켜기」 → 「저장」. 연결이 끊겨도 앱은 그대로 돌고, 다시 연결되면 밀린 것부터 보냅니다.'}</div>`;
+}
+// UNS 사건 대기함 (js/uns.js outbox) — 결정 · A2A · 명령 · 현장 업링크는 서버 응답 뒤에만 보낸 것으로 친다. 실패 · 대기 · 한도 초과로 버린 것을 그대로 보인다
+function unsTxHtml() {
+  if (hub.noServer) return 'UNS 토픽 트리에만 기록 (이 버전은 MQTT 브로커 없음)';
+  const T = uns.tx, Lz = uns.lost, last = Lz.log[0];
+  return `확정 ${T.acked.toLocaleString()}건 · 대기 ${uns.outbox.length.toLocaleString()}건${T.resent ? ` · 재전송 ${T.resent.toLocaleString()}건` : ''}${T.lastError ? ` · <b class="bad">전송 실패 — ${escH(T.lastError)} (2초마다 다시 · 사건은 대기함에 보관)</b>` : ''}${Lz.n ? ` · <b class="bad">대기함 한도 초과로 버림 ${Lz.n.toLocaleString()}건 (${escH(Object.entries(Lz.kinds).map(([k, n]) => `${k} ${n}`).join(' · '))}${last ? ` · 최근 ${escH(last.at.slice(11, 19))} UTC ${escH(last.runs.join(','))}` : ''})</b>` : ''}`;
 }
 function renderData() {
   const st = hub.stats(), mq = hub.mqtt, ms = mq.status;
@@ -763,7 +775,8 @@ function renderData() {
   const kindLabel = { Factory: '라인', Station: '설비·셀', CellRobot: '셀 로봇', AMR: '운반 AMR', AGV: 'AGV', Forklift: '지게차', Humanoid: '휴머노이드', Quadruped: '사족보행', MaintenanceRobot: '정비로봇', Drone: '순찰 드론', Gnb5G: '5G 기지국' };
   const broker = hub.shared ? '<b class="bad">공유 페이지에서는 사용할 수 없음</b> — 데이터 수집만 합니다. MQTT 발행과 파일 저장은 맥 앱이나 npm start로 실행하세요'
     : hub.noServer ? '<b class="bad">웹 버전에서는 사용할 수 없음</b> — 데이터 수집과 파일 저장은 됩니다. MQTT 발행은 맥 앱이나 npm start로 실행하세요'
-    : mq.available === false ? '<b class="bad">연결 안 됨</b> — 서버(npm start 또는 맥 앱) 없이 열려 있어 수집·저장만 합니다'
+    : mq.fails && !mq.everOk && mq.fails >= 3 ? `<b class="bad">서버에 연결된 적 없음</b> — 서버(npm start 또는 맥 앱) 없이 열려 있으면 수집·저장만 합니다 · 계속 다시 시도 중 (${escH(mq.lastError ?? '')})`
+    : mq.fails ? `<b class="bad">일시 전송 실패</b> — ${escH(mq.lastError ?? '')} · 연속 ${mq.fails}회 · 다시 시도 중 (주기 데이터 ${mq.failed.toLocaleString()}건 건너뜀 · 메타데이터·이벤트·명령 ${mq.held}건은 보관했다가 재전송)`
     : !ms ? '확인 중…' : ms.listening ? `<b class="ok">실행 중</b> · mqtt://${ms.host}:${ms.port} · 구독 클라이언트 ${ms.clients}개` : `<b class="bad">시작 실패</b> — ${escH(ms.error ?? '')}`;
   const preview = hub.lastMsg ? JSON.stringify(hub.lastMsg.msg, null, 1).slice(0, 1600) : '(아직 발행 전)';
   setHTML(dataBody, `
@@ -783,6 +796,7 @@ function renderData() {
       <section class="span2"><h4>📡 OPC UA PubSub (Part 14, JSON) over MQTT</h4><div class="grid2">
         <span>내장 MQTT 브로커</span><b>${broker}</b>
         <span>발행</span><b><label class="chk"><input type="checkbox" id="dhPub" ${hub.publishOn ? 'checked' : ''}/> 수집할 때마다 발행</label> · 보낸 메시지 ${mq.sent.toLocaleString()}개${ms ? ` · ${kb(ms.bytes)}` : ''}${ms?.bridgeUrl ? ` · 외부 브로커 ${escH(ms.bridgeUrl)} ${ms.bridgeConnected ? '연결됨' : '미연결'}` : ''}</b>
+        <span>UNS 사건 전송</span><b>${unsTxHtml()}</b>
         <span>데이터 토픽</span><b><code>opcua/json/data/${PUBLISHER_ID}/${WRITER_GROUP}/&lt;자산 id&gt;</code> (ua-data · ua-keyframe)</b>
         <span>메타데이터 토픽</span><b><code>opcua/json/metadata/${PUBLISHER_ID}/${WRITER_GROUP}/&lt;자산 id&gt;</code> (ua-metadata · retain, AAS semanticId 포함)</b>
         <span>상위 명령</span><b><code>opcua/json/data/${PUBLISHER_ID}/${WRITER_GROUP}/Commands</code> (명령 상태가 바뀔 때마다: 전송 · 수신 확인 · 실행 · 완료/거부)</b>
@@ -1500,6 +1514,7 @@ const toriMover = (id) => { const m = [...sim.movers, ...(sim.drones ?? [])].fin
 const tori = new Tori({ flyTo: (k) => toriCam({ view: k }), camTo: toriCam, openPanel: toriPanel, closePanels: toriClosePanels, qualityDrift: toriQualityDrift,
   quietEvent: toriEvent, speed: toriSpeed, moverPos: toriMover, pause: toriPause, sim: () => sim, setMode: (k) => document.querySelector(`#modeSeg button[data-mode="${k}"]`)?.click(), mode: () => modeKey,
   side: (k, hide) => setSide(k, hide, false), paused: () => !running });   // 토리가 잠시 펼친 패널은 저장하지 않는다 · 사용자가 멈춰 뒀는지   // 안내 아바타 (js/tori.js) — 처음 접속이면 인사
+toriRun = () => tori.simChanged();
 tori.greetIfFirst();
 if (blenderErr) sim.log('warn', 'Blender 모델을 불러오지 못함', { obs: blenderErr, act: '기본 도형 모델로 계속' });
 frame();
@@ -1760,8 +1775,10 @@ async function sensorFlush() {
   const N = sim.sensors; if (!N?.publish || sensorBusy || !N.pending()) return;
   const batch = N.take(600); sensorBusy = true;
   if (hub.pcap?.on) for (const m of batch) hub.pcap.publish({ key: m.src.id, kind: 'lan', ip: m.src.ip, topic: m.topic, payload: m.payload, tMs: m.tMs ?? hub.epochMs + sim.time * 1000, retain: m.retain, subs: [] });
-  try { const r = await fetch('/api/mqtt/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: batch.map(({ topic, payload, retain }) => ({ topic, payload, retain })) }) }); if (!r.ok) N.stats.dropped += batch.length; }   // 서버 오류(HTTP 500 등)도 유실로 센다
-  catch { N.stats.dropped += batch.length; } finally { sensorBusy = false; }
+  // 실패(연결 · HTTP 500 등): 측정 묶음은 주기 데이터라 유실로 세고 넘어간다(다음 묶음이 간다 · 묶음 seq로 서버가 빠진 구간을 안다) · 센서 메타(birth · retain)는 한 번만 나가므로 다시 넣어 재전송
+  const lost = () => { const b = batch.filter((m) => m.retain); N.birthQ.unshift(...b); N.stats.dropped += batch.length - b.length; };
+  try { const r = await fetch('/api/mqtt/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: batch.map(({ topic, payload, retain }) => ({ topic, payload, retain })) }) }); if (!r.ok) lost(); }
+  catch { lost(); } finally { sensorBusy = false; }
 }
 // 3D: 센서 위치 표시 (반투명 · 셀 위 3m — 설비·이동체와 겹쳐도 간섭 점검 대상이 아님)
 var sensor3d;   // var(초기값 없음): 첫 리셋(모듈 앞부분)에서 buildSensor3d가 먼저 불린다

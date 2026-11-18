@@ -183,7 +183,8 @@ export class DataHub {
     this.publishOn = true;
     this.shared = !!globalThis.window?.JIN3D_SHARED;   // 아티팩트 공유 페이지: 수집만 하고 발행·저장은 하지 않는다 (내려받기 차단)
     this.noServer = this.shared || !!globalThis.window?.JIN3D_NO_SERVER;   // 정적 웹(GitHub Pages): 발행만 못 하고 저장은 된다
-    this.mqtt = { available: this.noServer ? false : null, status: null, sent: 0, failed: 0, lastError: null };
+    // available: 마지막으로 서버에 닿았을 때 브로커가 떠 있었는가 (null = 아직 모름) · fails: 연속 전송 실패(서버에 닿지 못함 · HTTP 오류) — 일시 실패와 「서버 없음(noServer)」은 다르다 · everOk: 한 번이라도 서버에 닿았는가
+    this.mqtt = { available: this.noServer ? false : null, status: null, sent: 0, failed: 0, lastError: null, fails: 0, retryAt: 0, everOk: false, held: 0 };
     this.queue = []; this.flushT = 0; this.lastMsg = null;
     this.pcap = null;   // 패킷 덤프 (js/pcap.js) — 켜져 있으면 발행하는 메시지를 MQTT/TCP/IP 패킷으로도 기록
     this.assetPcaps = new Map();   // 개별 캡처 (로봇·설비 정보 창): 자산 id → PacketCapture(only)
@@ -347,26 +348,36 @@ export class DataHub {
     this.queue.push({ topic: `aas/${PUBLISHER_ID}/environment`, payload: this.count(JSON.stringify(buildEnvironment(this.assets, [], null))), retain: true });
   }
 
+  // 발행 대기열 → 서버 MQTT 브로커. 서버 없는 화면(noServer)은 버린다(수집·저장만).
+  //   전송 실패(서버가 잠시 안 됨 · HTTP 오류)는 「서버 없음」으로 굳히지 않는다 — 간격을 늘려(1초 → 최대 30초) 계속 다시 시도하고 화면에 일시 실패로 보인다.
+  //   실패한 묶음: 주기 데이터(ua-keyframe 수집값)는 버린다(다음 수집에 새 값이 간다 · failed에 셈) · 한 번만 나가는 것(retain 메타데이터 · AAS 모델 · 이벤트 · 명령)은 다시 넣어 재전송
   async flush() {
     if (!this.queue.length) return;
-    if (this.mqtt.available === false || this.flushing) { if (this.mqtt.available === false) this.queue = []; return; }
+    if (this.noServer) { this.queue = []; return; }
+    const M = this.mqtt, once = (m) => m.retain || /\/(Events|Commands)$/.test(m.topic);
+    if (this.flushing || Date.now() < M.retryAt) {
+      if (this.queue.length > 6000) { const keep = this.queue.filter(once).slice(-4000), n = this.queue.length - keep.length; M.failed += n; this.queue = keep; }   // 기다리는 동안 쌓이는 주기 데이터는 버린다
+      return;
+    }
     const batch = this.queue.splice(0, 2000);
     this.flushing = true;
     try {
       const res = await fetch('/api/mqtt/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: batch }) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const out = await res.json();
-      this.mqtt.available = !!out.status?.listening; this.mqtt.status = out.status; this.mqtt.sent += out.published;
-      if (!out.status?.listening) this.queue = [];
+      M.available = !!out.status?.listening; M.status = out.status; M.sent += out.published; M.fails = 0; M.retryAt = 0; M.everOk = true; M.lastError = null;
+      if (!out.status?.listening) this.queue = [];   // 서버는 있는데 브로커가 못 떴다 (포트 충돌 등) — 상태에 사유가 있다
     } catch (e) {
-      this.mqtt.failed += batch.length; this.mqtt.lastError = e.message;
-      this.mqtt.available = false;   // 서버 없는 환경(정적 공유 등): 수집·저장만 한다
+      const again = batch.filter(once);
+      M.failed += batch.length - again.length; M.lastError = e.message; M.fails++; M.held = again.length;
+      M.retryAt = Date.now() + Math.min(30000, 1000 * 2 ** Math.min(M.fails - 1, 5));
+      this.queue.unshift(...again);
     } finally { this.flushing = false; }
   }
   async refreshStatus() {
     if (this.noServer) return this.mqtt;
-    try { const r = await fetch('/api/mqtt/status'); this.mqtt.status = await r.json(); this.mqtt.available = !!this.mqtt.status.listening; }
-    catch { this.mqtt.available = false; }
+    try { const r = await fetch('/api/mqtt/status'); if (!r.ok) throw new Error(`HTTP ${r.status}`); this.mqtt.status = await r.json(); this.mqtt.available = !!this.mqtt.status.listening; this.mqtt.everOk = true; if (this.mqtt.fails) this.mqtt.retryAt = 0; }   // 서버가 돌아왔다 — 바로 다시 보낸다
+    catch (e) { this.mqtt.lastError = e.message; this.mqtt.fails = Math.max(1, this.mqtt.fails); }
     return this.mqtt;
   }
 

@@ -29,6 +29,9 @@ export const EN_UI = {
   bubble: 'Tori guide', name: 'Tori', voice: 'Read aloud', close: 'Fold', avatar: 'Tori — click to choose a guide topic', gpu: 'How Tori is drawn',
   prev: '◀ Back', next: 'Next ▶', topics: 'Topics', finish: 'Finish', later: 'Later', start: 'Start tour ▶', lang: '한국어로 안내', langBtn: '한',
   ring: { loop: 'Data loop', fly: 'Flywheel' },
+  // 실시간 안내 문장 (녹음 없음 — OS 음성): 준비 전 「다음」 · 대기 시간 초과 · 공장이 새로 시작됨
+  wait: "It isn't ready yet — I'll move on as soon as it is.", timeout: "What I was waiting for didn't happen within the wait time. I'll stop this example here and move on to the next topic — press “Keep waiting” to wait longer.", retry: 'Keep waiting ↻',
+  stopped: 'The factory was restarted, so I stopped the guide. Choose a topic to continue.',
 };
 export const EN_CHAINS = {
   CHAIN: [['Order', ''], ['Lot', 'raw lot'], ['Start', 'WIP ID'], ['Cells', 'cell log'], ['Judge', 'product ID'], ['Ship', 'pallet SSCC'], ['After', 'recall']],
@@ -114,7 +117,8 @@ export const EN = {
         warn: "This is the floor. A problem just appeared in front of a robot camera. See the yellow marker and the light pillar? It's yellow because this is a warning. Nobody knows about it yet." },
       say: (T, H) => T.ev ? `The floor — there's just been ${EVT[T.ev.type] ?? T.ev.type} (priority P${H.prioOf(T.ev)} · hazard radius ${H.RADIUS[T.ev.type] ?? 1.2} m). See the ${H.sevK(T) === 'alarm' ? 'red' : 'yellow'} marker and light pillar? ${H.sevK(T) === 'alarm' ? 'Alarm level (red).' : 'Warning level (yellow).'} Nobody knows yet.` : "I can't create a field event right now. Try again with the ⚠ field event button in the Physical AI stage." },
     { voice: 'AI keeps analyzing the camera video of robots passing nearby. If it sees a strange object or a person, it detects it right away.',
-      say: (T) => `AI detection — AI keeps analyzing the camera video of robots passing nearby. ${!T.ev ? '' : T.ev.detected ? `${nm(T.ev.detectedBy)} detected it!` : `Searching now… (${sec((T.h.sim?.()?.time ?? T.ev.t0) - T.ev.t0)} elapsed)`}` },
+      say: (T) => `AI detection — AI keeps analyzing the camera video of robots passing nearby. ${!T.ev ? '' : T.ev.detected ? `${nm(T.ev.detectedBy)} detected it!` : `Searching now… (${sec((T.h.sim?.()?.time ?? T.ev.t0) - T.ev.t0)} elapsed)`}`,
+      wait: "It hasn't been detected yet — I'll move on as soon as it is." },
     { voice: {
         robot: "This robot detected it. In the robot window that opens shortly, you can see its camera view and the AI detection box. As soon as it's detected, the cell slows down and reroutes on its own.",
         cctv: "This time the CCTV video AI spotted it first. As soon as it's detected, the cell slows down on its own and nearby robots route around the area." },

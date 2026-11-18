@@ -1,4 +1,4 @@
-// 구간별 성능 수치 뽑기 — 앱과 같은 창 크기(1600×960)로 띄워 단계마다 몸풀기 뒤 일정 시간 재고 구간별 평균·p95·draw call을 낸다 (js/perf.js)
+// 구간별 성능 수치 뽑기 — 앱과 같은 창 크기(1600×960)로 띄워 단계마다 몸풀기 뒤 일정 시간 재고 평균 fps · 프레임 간격 p95/p99 · CPU · 구간별 평균·p95·draw call을 낸다 (js/perf.js)
 // 단계: 레거시 · 자동화 · 피지컬AI · 피지컬AI + 로봇 정보 창(손목 카메라 영상) · 피지컬AI + CCTV 영상 창
 // 실행: npm run perf   결과: outputs/perf/report-<시각>.json   (PERF_SEC=초 로 측정 시간 변경, 기본 12초)
 const { app, BrowserWindow } = require('electron');
@@ -22,6 +22,7 @@ app.whenReady().then(async () => {
     await w.loadURL(`http://127.0.0.1:${port}`); const js = (c) => w.webContents.executeJavaScript(c);
     for (let k = 0; k < 90; k++) { if (await js('!!window.__twin?.RENDER.loaded')) break; await wait(500); }
     if (!await js('!!window.__twin?.RENDER.loaded')) throw Error('Blender assets not loaded');
+    await js('window.__twin.tori?.close?.()');   // 토리 안내가 자동으로 넘어가며 단계 · 배속 · 카메라를 바꾸면 장면 조건이 달라진다 — 재기 전에 접는다
     const gpu = await js(`(()=>{const g=window.__twin.perf.getRenderer().getContext(),d=g.getExtension('WEBGL_debug_renderer_info');return d?g.getParameter(d.UNMASKED_RENDERER_WEBGL):g.getParameter(g.RENDERER);})()`);
     const report = { at: new Date().toISOString(), electron: process.versions.electron, chrome: process.versions.chrome, platform: `${process.platform}-${process.arch}`, gpu, sec: SEC, scenes: [] };
     console.log(`GPU ${gpu} · Electron ${process.versions.electron} (Chrome ${process.versions.chrome}) · 단계마다 ${SEC}초`);
@@ -34,7 +35,7 @@ app.whenReady().then(async () => {
       await js('window.__twin.perf.toggle(true)'); await wait(SEC * 1000);
       const s = await js('window.__twin.perf.snapshot()'); await js('window.__twin.perf.toggle(false)');
       report.scenes.push({ name, mode, ...s });
-      console.log(`\n== ${name}  ${s.fps} fps · 간격 ${s.gapAvg}ms (p95 ${s.gapP95}) · CPU ${s.cpuAvg}ms (p95 ${s.cpuP95}) · draw ${s.callsAvg} (최대 ${s.callsMax}) · 삼각형 ${(s.triAvg / 1e6).toFixed(2)}M`);
+      console.log(`\n== ${name}  ${s.fps} fps · 간격 ${s.gapAvg}ms (p95 ${s.gapP95} · p99 ${s.gapP99} · 최대 ${s.gapMax}) · CPU ${s.cpuAvg}ms (p95 ${s.cpuP95}) · draw ${s.callsAvg} (최대 ${s.callsMax}) · 삼각형 ${(s.triAvg / 1e6).toFixed(2)}M`);
       for (const v of Object.values(s.sections)) if (v.avg >= 0.05 || v.calls) console.log(`  ${v.label.padEnd(12)} 평균 ${v.avg.toFixed(2).padStart(6)}ms  p95 ${v.p95.toFixed(2).padStart(6)}ms  최대 ${v.max.toFixed(1).padStart(6)}ms  draw ${String(v.calls).padStart(5)}`);
     }
     // 에피소드 카메라 프레임 점검: 카메라 4대 에피소드는 카메라마다 프레임 수가 같아야 한다 (한 스텝의 묶음을 한꺼번에 찍음 · js/vla.js)

@@ -11,12 +11,19 @@
 //     {존}/{셀|_zone}/cmd/request                  외부 명령 요청 (operator · zone 계정 · 게이트웨이 대기열 → applyCommand)
 //     {존}/_field/{로봇}/detect | clip | ack | status | track | done   현장 이벤트 — 감지 로봇 · 대응 로봇 · 추적 사족보행 업링크 (status만 retain)
 // 원칙: 상태는 값이 바뀔 때만 발행(Report by Exception) + retain, 이벤트는 retain 없이 그때그때. 명령은 Correlation ID(correlationId)로 요청 → 접수 → 실행 → 완료를 묶는다.
+// 전송 보장 (앱 — 서버 있음): 상태와 사건을 나눠 다룬다.
+//   · 상태(retain · 설비 요약 · KPI)는 주기마다 새로 만든다 — 전송에 실패하면 rebirth()로 다음 주기에 전부 다시 발행하면 된다
+//   · 사건(결정 · A2A · 명령 4단 · 현장 업링크 · 품질 표본 · 운영 이벤트)은 한 번만 생긴다 — 만들 때 중복 방지 키(key)와 실행 ID(run)를 붙여 대기함(outbox)에 넣고,
+//     서버가 받았다고 응답(ACK)한 뒤에만 뺀다. 실패하면 그대로 남아 다음 주기에 같은 key로 다시 간다 (서버 · FacOS 저장소가 key로 한 번만 기록)
+//   · 단계 전환 · 리셋: 이전 실행의 마지막 사건을 거둔 뒤(harvest) 대기함은 그대로 둔다 — 이전 실행의 run으로 마저 보낸다
+//   · 대기함은 OUTBOX_MAX건까지 — 넘치면 오래된 것부터 버리고 무엇을 버렸는지(실행 · 종류별 건수 · key 범위) lost에 남긴다
 // 렌더링과 분리 — 헤드리스에서도 같은 트리. 시뮬레이션 상태를 바꾸지 않는다(읽기만).
 import { ZONE_ORCH_KEYS, ocsState, zoneOfEp } from './factoryos.js';
 import { COMMANDS } from './commands.js';
 
 export const UNS_ROOT = 'camtic/metafactory';
 export const UNS_VERSION = 'v1';
+export const OUTBOX_MAX = 5000, OUTBOX_BATCH = 1000;   // 사건 대기함 한도 · 한 번에 보낼 사건 수
 export const UNS_AREAS = { main: '정밀조립' };   // Area = 존 (micro-assembly는 정밀조립 하나 — 토픽 뿌리는 상위 공장과 같게)
 const seg = (s) => String(s ?? '').replace(/[^\w.-]/g, '_') || '_';   // MQTT 토픽 금지 문자(+ # /)와 공백 제거
 const CMD_SUB = { sent: 'cmd', ack: 'cmd/ack', exec: 'cmd/exec', done: 'cmd/done', rejected: 'cmd/done' };
@@ -31,9 +38,16 @@ export const UNS_LEVELS = ISA95;
 export const fieldTopic = (m, root = UNS_ROOT) => `${root}/${m.zone}/_field/${seg(m.uid ?? m.robot)}/${m.kind}`;
 
 export class UnsNamespace {
-  constructor(sim, { iso = null, root = UNS_ROOT, run = null } = {}) { this.root = root; this.iso = iso; this.runOf = run; this.reset(sim); }   // run: 실행 ID (데이터 허브 runId) — 서버 FacOS 기록이 실행별 파일로 나눈다
+  constructor(sim, { iso = null, root = UNS_ROOT, run = null, outboxMax = OUTBOX_MAX } = {}) {   // run: 실행 ID (데이터 허브 runId) — 서버 FacOS 기록이 실행별 파일로 나눈다
+    this.root = root; this.iso = iso; this.runOf = run;
+    // 사건 대기함 — reset(새 실행)해도 비우지 않는다. key = 실행 : 이 화면의 난수 : 일련번호 (다른 화면 · 다시 연 화면과 겹치지 않게)
+    this.outbox = []; this.outboxMax = outboxMax; this.evSeq = 0; this.nonce = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
+    this.lost = { n: 0, kinds: {}, log: [] }; this.tx = { acked: 0, failed: 0, resent: 0, lastError: null, lastFailAt: null, lastOkAt: null };
+    this.reset(sim);
+  }
   reset(sim) {
     this.sim = sim; if (sim) sim.uns = this;
+    this.run = this.runOf?.() ?? null;   // 이 실행의 ID — 리셋 뒤 늦게 나가는 사건도 생긴 실행의 ID를 달고 간다
     this.tree = new Map();      // 토픽 → { topic, payload, retain, n, t, bytes, kind }
     this.prev = new Map();      // retain 토픽의 직전 본문 (Report by Exception 비교용 · ts 제외)
     this.a2aSeq = 0; this.fieldSeq = 0; this.cmdSeen = new Map(); this.decSeen = new WeakSet();
@@ -49,6 +63,7 @@ export class UnsNamespace {
   t(...parts) { return [this.root, ...parts].join('/'); }
 
   // 하나 발행 — retain 상태는 본문이 바뀔 때만
+  //   사건(한 번만 생기는 것 — retain 아닌 것 · 현장 업링크는 상태(retain)도 로그에서 한 번만 나온다)에는 중복 방지 키 · 실행 ID를 붙인다 (설비 요약 · KPI는 주기 데이터라 제외)
   put(out, topic, body, { retain = false, kind = 'event', t = this.sim.time, raw = null, props = null } = {}) {
     const core = raw ?? JSON.stringify(body);
     if (retain) { if (this.prev.get(topic) === core) { this.stats.suppressed++; return; } this.prev.set(topic, core); }
@@ -57,7 +72,54 @@ export class UnsNamespace {
     Object.assign(e, { payload, retain, t, bytes: payload.length, kind }); e.n++;
     this.tree.set(topic, e);
     this.stats.msgs++; this.stats.bytes += payload.length;
-    out.push(props ? { topic, payload, retain, props } : { topic, payload, retain });
+    const m = props ? { topic, payload, retain, props } : { topic, payload, retain };
+    if (kind !== 'telemetry' && kind !== 'kpi' && (!retain || kind === 'field')) this.stamp(m, kind);
+    out.push(m);
+  }
+  stamp(m, kind) { const run = this.run ?? this.runOf?.() ?? null; m.key = `${run ?? '-'}:${this.nonce}:${++this.evSeq}`; if (run) m.run = run; Object.defineProperty(m, 'kind', { value: kind, enumerable: false }); return m; }
+
+  // ── 사건 대기함 (outbox) ─────────────────
+  // 넣기 — 한도를 넘으면 오래된 것부터 버리고 기록한다 (무엇을: 실행 · 종류별 건수 · key 범위)
+  enqueue(msgs, kind = 'event') {
+    for (const m of msgs) this.outbox.push(m.key ? m : this.stamp({ ...m }, kind));
+    const over = this.outbox.length - this.outboxMax; if (over <= 0) return;
+    const D = this.outbox.splice(0, over), kinds = {};
+    for (const m of D) { kinds[m.kind ?? 'event'] = (kinds[m.kind ?? 'event'] ?? 0) + 1; this.lost.kinds[m.kind ?? 'event'] = (this.lost.kinds[m.kind ?? 'event'] ?? 0) + 1; }
+    this.lost.n += D.length; this.lost.log.unshift({ at: new Date().toISOString(), n: D.length, kinds, runs: [...new Set(D.map((m) => m.run ?? '-'))], first: D[0].key, last: D.at(-1).key, why: `대기함 한도 ${this.outboxMax}건 초과 — 서버 전송 실패가 이어짐` });
+    if (this.lost.log.length > 20) this.lost.log.pop();
+  }
+  // 한 주기분 만들기 — 상태(이번 주기에만 유효)와 사건(대기함에 쌓인 것부터 max건)을 나눠 준다
+  stage(extra = {}, max = OUTBOX_BATCH) {
+    const states = [], fresh = [];
+    for (const m of this.collect(extra)) (m.key ? fresh : states).push(m);
+    this.enqueue(fresh);
+    return { states, events: this.outbox.slice(0, max) };
+  }
+  // 서버가 받았다고 응답한 사건만 대기함에서 뺀다
+  ack(events) { if (!events.length) return; const K = new Set(events.map((m) => m.key)), n = this.outbox.length; this.outbox = this.outbox.filter((m) => !K.has(m.key)); this.tx.acked += n - this.outbox.length; }
+  // 새 실행으로 넘어가기 직전 — 이전 실행(this.sim)에서 아직 거두지 않은 사건을 대기함에 (상태는 버린다 · 새 실행이 탄생 메시지부터 다시 낸다)
+  harvest(extra = {}) { if (!this.sim) return 0; const n = this.outbox.length; this.stage(extra, 0); return this.outbox.length - n; }
+  // 한 주기 전송 — post(messages) → 서버 응답(JSON) · 실패(연결 · HTTP 오류 · JSON 오류 응답 · 브로커 꺼짐)는 던지거나 accepted:false
+  //   성공: 보낸 사건 확정(ack) · 실패: 사건은 대기함에 그대로 + 상태만 rebirth로 다음 주기에 다시 (상태 재발행과 사건 재전송은 따로)
+  //   periodic: 주기 데이터(평면 설비 요약 · OEE — 유실 허용) · keep: 상태 중 보낼 것만 고르는 함수 (Sparkplug가 켜져 있으면 {셀}/telemetry 제외)
+  async send(post, { periodic = [], extra = {}, keep = null } = {}) {
+    const S = this.stage(extra), states = keep ? S.states.filter(keep) : S.states, events = S.events, messages = [...periodic, ...states, ...events];
+    if (!messages.length) return { ok: true, sent: 0, events: 0 };
+    const again = events.filter((m) => m.tried).length; for (const m of events) Object.defineProperty(m, 'tried', { value: true, enumerable: false, configurable: true });
+    try {
+      const j = await post(messages);
+      this.broker.status = j?.status ?? null; this.broker.facos = j?.facos ?? null; this.broker.on = !!j?.status?.listening;
+      if (!(j?.accepted ?? this.broker.on)) throw new Error(`MQTT 브로커가 꺼져 있습니다${j?.status?.error ? ` — ${j.status.error}` : ''}`);
+      this.ack(events); this.tx.resent += again; this.tx.lastError = null; this.tx.lastOkAt = Date.now();
+      this.broker.published += states.length + events.length; this.broker.error = null;
+      if (j.status?.uns?.rebirth) this.rebirth();   // 게이트웨이가 죽음 처리했거나 새로 시작 — 다음 주기에 모든 retain 상태를 다시 발행 (사건은 다시 보내지 않는다)
+      return { ok: true, sent: messages.length, events: events.length, json: j };
+    } catch (e) {
+      const why = e?.message ?? String(e);
+      this.broker.error = why; this.tx.failed++; this.tx.lastError = why; this.tx.lastFailAt = Date.now();
+      this.rebirth();   // 이번 주기의 상태는 서버에 닿지 않았다 — 다음 주기에 다시 (사건은 대기함에 남아 있다)
+      return { ok: false, error: why, events: events.length };
+    }
   }
 
   cellUid(id) { const st = this.sim.processing?.find((x) => x.id === id); return seg(st?.uid ?? id); }
@@ -160,6 +222,13 @@ export class UnsNamespace {
   // 트리 보기용 요약
   summary() {
     const E = [...this.tree.values()];
-    return { topics: E.length, retained: E.filter((e) => e.retain).length, ...this.stats };
+    return { topics: E.length, retained: E.filter((e) => e.retain).length, ...this.stats, outbox: this.outbox.length, lost: this.lost.n, acked: this.tx.acked, sendFailed: this.tx.failed };
   }
 }
+// 화면에서 쓰는 전송 함수 — HTTP 오류(r.ok === false)와 JSON 오류 응답({ error })도 실패로 던진다 (JSON 본문이 있다고 성공으로 치지 않는다)
+export const unsPostVia = (fetchImpl, url = '/api/mqtt/publish') => async (messages) => {
+  const r = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }) });
+  let j = null; try { j = await r.json(); } catch { /* JSON이 아닌 응답 */ }
+  if (!r.ok || !j || j.error) throw new Error(j?.error ? String(j.error) : `HTTP ${r.status}`);
+  return j;
+};

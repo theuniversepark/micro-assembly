@@ -36,7 +36,7 @@ const cmdq = { queue: [], received: 0, rejected: 0, taken: 0, expired: 0, last: 
 // UNS 메시지를 받아 볼 곳 (server/facos-store.mjs — FacOS 기록 서버 저장)
 let unsTap = null;
 export function setUnsTap(fn) { unsTap = fn; }
-const tapUns = (m) => { if (unsTap && m.topic.startsWith(`${UNS_ROOT}/`)) { try { unsTap(m.topic, m.payload); } catch { /* 저장 실패가 발행을 막지 않게 */ } } };
+const tapUns = (m) => { if (unsTap && m.topic.startsWith(`${UNS_ROOT}/`)) { try { unsTap(m.topic, m.payload, m); } catch { /* 저장 실패가 발행을 막지 않게 */ } } };
 const CMD_MAX = 100;
 
 export async function startMqtt({ host = process.env.MQTT_HOST || '127.0.0.1', port = Number(process.env.MQTT_PORT) || 1883, bridgeUrl = process.env.MQTT_BRIDGE_URL, aclFile = null, bridgeFile = null, sparkplug = process.env.UNS_SPARKPLUG !== 'off', engine = process.env.MQTT_ENGINE || 'auto' } = {}) {
@@ -182,12 +182,20 @@ function unsWatch() {
 export const mqttStatus = () => ({ ...state, uns: { ...uns }, acl: acl?.status() ?? null, sparkplug: sp?.status() ?? null, commands: { pending: cmdq.queue.length, received: cmdq.received, rejected: cmdq.rejected, taken: cmdq.taken, expired: cmdq.expired, last: cmdq.last } });
 export const unsAclPassword = (name) => acl?.password(name) ?? null;
 
-// messages: [{ topic, payload(문자열), retain, props? }]
+// messages: [{ topic, payload(문자열), retain, props?, key?, run? }]
+//   key: 사건(이벤트) 중복 방지 키 (js/uns.js outbox) — 화면이 응답을 못 받아 같은 사건을 다시 보내도 한 번만 발행 · 기록한다 (최근 DEDUP_KEEP개 기억 · FacOS 저장소는 파일로도 거른다)
+//   run: 그 사건이 생긴 실행 ID — 단계 전환 뒤에 늦게 온 이전 실행의 사건을 FacOS 저장소가 그 실행 파일에 쓴다
+const DEDUP_KEEP = 50000, seenKeys = new Set();
+export const mqttDedup = { duplicates: 0 };
 export function mqttPublish(messages) {
   if (!broker && !pub) return 0;
   let n = 0;
   for (const m of messages) {
     if (typeof m?.topic !== 'string' || typeof m?.payload !== 'string' || !m.topic || m.topic.length > 512) continue;
+    if (typeof m.key === 'string' && m.key) {
+      if (seenKeys.has(m.key)) { mqttDedup.duplicates++; continue; }
+      seenKeys.add(m.key); if (seenKeys.size > DEDUP_KEEP) seenKeys.delete(seenKeys.values().next().value);
+    }
     if (m.topic.startsWith(`${UNS_ROOT}/`)) {
       uns.lastAt = Date.now(); uns.alive = true;
       if (m.topic === `${UNS_ROOT}/_meta/namespace`) { uns.rebirth = false; uns.births++; }   // 탄생 메시지 = rebirth 끝

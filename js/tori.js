@@ -2,8 +2,10 @@
 // 주제별로 안내한다: 메타팩토리 둘러보기(단계 · Zone 카메라 이동 · 주요 버튼 강조) · 인시던트 해결 예시(실제로 현장 이벤트를 일으켜 진행 상황을 읽어 줌)
 //   · 데이터 폐루프 · 데이터 플라이휠(고리 그림에 지금 단계 표시) · 매뉴얼·앱 내려받기
 // 접으면 작은 얼굴만 남고, 누르면 주제 메뉴.
-// 자동 넘김: 말이 끝난 뒤(음성이 없으면 읽는 시간 뒤) 1초 동안 「다음」을 누르지 않으면 다음 단계로 (첫 인사도 둘러보기 시작) — 주제 마지막 단계는 이어진 다음 주제로(메뉴 순서), 활용 및 기대 맺음말이 끝나면 5초 뒤 메타팩토리 둘러보기부터 다시(끝없이 되풀이 · 「마치기」를 누르면 멈춤), 메뉴는 기다림,
-//   실제로 일어나기를 기다리는 단계(인시던트 감지 · 출동 · 처리)는 ready()가 참이 된 뒤부터 (최대 90초)
+// 자동 넘김: 말이 끝난 뒤(음성이 없거나 낼 수 없으면 읽는 시간 뒤) 1초 동안 「다음」을 누르지 않으면 다음 단계로 (첫 인사도 둘러보기 시작) — 주제 마지막 단계는 이어진 다음 주제로(메뉴 순서), 활용 및 기대 맺음말이 끝나면 5초 뒤 메타팩토리 둘러보기부터 다시(끝없이 되풀이 · 「마치기」를 누르면 멈춤), 메뉴는 기다림,
+//   실제로 일어나기를 기다리는 단계(인시던트 감지 · 출동 · 처리)는 ready()가 참이 된 뒤에만 — 「다음」 단추도 같은 검사 (준비 전이면 기다린다고 알림). 90초가 지나도 일어나지 않으면 「완료」로 넘기지 않고 시간 초과를 알린 뒤 다음 주제로 (「다시 기다리기」로 더 기다림)
+// 공장과 맞추기: 공장이 새로 시작되면(main.js start() → simChanged — 단계 · 라인 · 리셋) 옛 공장의 이벤트 · 제안 · 망 상태를 버리고 안내를 멈추거나 새 공장에서 다시 구성한다. 예약된 창 · 멈춤 · 추적 콜백은 세대(gen)가 지나면 무효
+//   「이전」으로 돌아온 단계도 순방향과 같은 창 · 카메라 · 상위망 상태로 맞춘다 (이벤트를 만드는 동작만 다시 하지 않는다)
 // 그리기: 토리 전용 캔버스를 WebGPU(three/webgpu WebGPURenderer)로 — 메인 3D 화면(WebGL)과 따로라 공장 화면 속도와 무관
 //   WebGPU를 쓸 수 없는 브라우저 · 공유 아티팩트에서는 같은 장면을 WebGL로 그린다 (모양 · 동작 같음)
 // 말: 말풍선 글자와 브라우저 내장 한국어 음성(speechSynthesis — 설치 · 비용 없음)을 함께 · 🔊로 음성만 끌 수 있음
@@ -159,11 +161,11 @@ const TOPICS = {
       panel: { kind: 'orch', tab: 'a2a' }, hl: ['#btnOrch'], fchain: 1,
       voice: '이번에는 가드레일을 시험해 볼게요. 공장 오케스트레이터가 Zone을 건너뛰어 셀에 직접 속도 명령을 보내 봤어요. 명령은 바로 아래 계층으로만 내려갈 수 있어서 게이트웨이가 막았어요. 모든 메시지는 번호를 달고 기록돼요.',
       say: (T) => T.guard ? `가드레일 시험 — 제가 공장 오케스트레이터에서 Zone을 건너뛰어 셀 OCS(${T.guard.to.slice(5)})로 속도 명령을 보내 봤어요. 결과: ${T.guard.status === 'blocked' ? `차단 (${T.guard.why})` : T.guard.status}, ${T.guard.msgId}. A2A 메시지 탭에 빨간 줄로 남았어요. 모든 메시지는 번호 · 보낸 곳 · 받는 곳 · 계획 버전과 함께 기록돼요.` : '지금은 FacOS가 없어요 (피지컬AI 단계에서).' },
-    { act: (T) => { const F = fos(T); if (F && T.netOff === undefined) { T.netOff = F.online; if (F.online) F.setOnline(false); T.netT0 = performance.now(); F.bus.send('zone:main', 'factory', 'status', { text: '정밀조립 상태 보고 (상위망 단절 중 · 토리 시험)' }); } }, hl: ['#btnOrch'], fchain: 1, live: true,
+    { net: 'off', hl: ['#btnOrch'], fchain: 1, live: true,   // 이 단계에 있는 동안만 상위망을 끊는다 — 앞 · 뒤 어느 쪽에서 들어와도 같게 (go → syncNet)
       ready: (T) => !fos(T) || fos(T).kpi().queued > 0 || performance.now() - (T.netT0 ?? 0) > 15000,
       voice: '이번엔 공장과 Zone 사이 상위망을 끊어 볼게요. 망이 끊겨도 Zone은 승인된 범위 안에서 계속 일하고, 공장으로 갈 메시지는 Outbox에 쌓아 둬요.',
       say: (T) => { const F = fos(T); return F ? `상위망 단절 시험 — 공장 ↔ Zone 망을 끊었어요. Zone은 승인된 범위 안에서 계속 일하고, 공장으로 갈 메시지는 Edge Outbox에 쌓여요: 지금 ${F.kpi().queued}건.` : ''; } },
-    { act: (T) => { const F = fos(T); if (F && T.netOff) { T.flushed = F.setOnline(true); T.netOff = false; } }, hl: ['#btnOrch'], fchain: 1,
+    { hl: ['#btnOrch'], fchain: 1,   // 망 복구는 go → syncNet (단절 단계를 벗어나면 다시 잇고 전달된 건수를 T.flushed에)
       voice: '망을 복구했어요. 쌓여 있던 메시지가 순서대로 공장에 전달됐어요. 접수 확인만으로 재개하지 않고, 공장이 실제로 처리한 뒤에 다음으로 넘어가요.',
       say: (T) => `복구 — 망을 다시 연결하자 Outbox에 쌓인 ${T.flushed ?? 0}건이 순서대로 공장에 전달됐어요. 접수 확인(ACK)만으로 재개하지 않고, 공장이 실제로 처리한 결과로 넘어가요. 이 시험 기록도 A2A 메시지 탭에 남아요.` },
     { panel: { kind: 'facos', view: 'cell' }, cam: { view: 'precision' }, hl: ['#facos'], fchain: 3, live: true,
@@ -238,11 +240,12 @@ const TOPICS = {
         warn: '현장입니다. 방금 로봇 카메라 앞에 문제가 생겼어요. 노란 표지와 빛기둥이 보이죠? 주의 단계라 노란색이에요. 아직 아무도 모르는 상태예요.' },
       say: (T) => T.ev ? `현장 — 방금 「${T.ev.label}」 상황이 생겼어요 (우선순위 P${prioOf(T.ev)} · 위험 반경 ${RADIUS[T.ev.type] ?? 1.2}m). ${evColor(T)} 표지와 빛기둥이 보이죠? ${sevK(T) === 'alarm' ? '경보(빨강)' : '주의(노랑)'} 단계예요. 아직 아무도 모르는 상태예요.` : '지금은 현장 이벤트를 만들 수 없어요. 피지컬AI 단계에서 ⚠ 현장 이벤트 버튼으로 다시 해 보세요.' },
     { act: (T) => { if (T.ev?.quiet) { T.ev.quiet = false; T.ev.tq = T.h.sim?.()?.time; } }, hold: (T) => !!T.ev?.detected, live: true, ready: (T) => !T.ev || T.ev.detected || T.ev.cleared,
+      wait: '아직 감지되지 않았어요 — 감지되면 바로 넘어갈게요.',   // 감지 전에 「다음」을 눌렀을 때 (녹음 없음 — OS 음성)
       voice: '주변을 지나는 로봇의 카메라 영상을 AI가 계속 추론하고 있어요. 이상한 물체나 사람이 보이면 바로 감지해요.',
       say: (T) => `AI 감지 — 주변을 지나는 로봇 카메라 영상을 AI가 계속 추론하고 있어요. ${!T.ev ? '' : T.ev.detected ? `${ga(T.ev.detectedBy)} 감지했어요!` : `지금 찾는 중이에요… (${sec((T.h.sim?.()?.time ?? T.ev.t0) - T.ev.t0)} 경과)`}` },
     { cam: (T) => { const p = T.ev && T.h.moverPos?.(T.ev.detectedBy); return p ? { x: p.x, z: p.z, d: 8 } : T.ev && { x: T.ev.x, z: T.ev.z, d: 9 }; },
-      panel: (T) => T.ev?.detectedBy && byRobot(T) === 'robot' && { kind: 'robot', id: T.ev.detectedBy }, hold: () => true,   // 감지한 그 순간의 카메라 화면을 보여 준다
-      vk: byRobot, voice: {
+      panel: (T) => T.ev?.detectedBy && byRobot(T) === 'robot' && { kind: 'robot', id: T.ev.detectedBy }, hold: (T) => !!T.ev?.detected,   // 감지한 그 순간의 카메라 화면을 보여 준다 — 감지되지 않은 현장은 멈추지 않는다
+      vok: (T) => !!T.ev?.detected, vk: byRobot, voice: {   // 감지 전이면 「감지했어요」 녹음 대신 말풍선 글을 읽는다
         robot: '이 로봇이 감지했어요. 잠시 뒤 열리는 로봇 정보 창에서 그 로봇의 카메라 영상과 AI 검출 상자를 볼 수 있어요. 감지하자마자 셀은 스스로 감속하고 우회해요.',
         cctv: '이번에는 CCTV 영상 AI가 먼저 감지했어요. 감지하자마자 셀은 스스로 감속하고, 주변 로봇은 그 구역을 우회해요.' },
       say: (T) => !T.ev?.detected ? '아직 감지되지 않았어요. 조금 더 기다려 볼게요.' : byRobot(T) === 'cctv' ? `${ga(T.ev.detectedBy)} ${took(T)} 감지했어요 (신뢰도 ${Math.round((T.ev.conf ?? 0) * 100)}%). 감지 즉시 셀 자체 조치 — ${T.ev.type === 'intrusion' ? '주변 로봇 협동 감속 · 접근 금지 구역 표시' : '주변 로봇 감속 · 우회 · 구역 표시'}. (설명하는 동안 현장은 잠시 멈춰 둘게요)` : `${ga(T.ev.detectedBy)} ${took(T)} 감지했어요 (신뢰도 ${Math.round((T.ev.conf ?? 0) * 100)}%). 잠시 뒤 열리는 로봇 정보 창에 그 카메라 영상과 AI 검출 상자가 보여요. 감지 즉시 셀 자체 조치 — ${T.ev.type === 'intrusion' ? '주변 로봇 협동 감속 · 접근 금지 구역 표시' : '감지 로봇 감속 · 우회 · 구역 표시'}.${T.held ? ' (설명하는 동안 현장은 잠시 멈춰 둘게요)' : ''}` },
@@ -499,12 +502,19 @@ export const voiceKey = (t, lang = 'ko') => { let h = 0x811c9dc5; for (const c o
 // 녹음할 문장 전체: 고정 문장은 말풍선 그대로, 실시간 수치가 들어가는 단계는 voice(수치 없는 읽을 글)
 export function narration(lang = 'ko') { const en = lang === 'en'; return [en ? EN_UI.menu : MENU_SAY, ...Object.values(TOPICS).flatMap((T) => T.steps.map((s) => (en ? s.en : s)).filter(Boolean).flatMap((s) => (s.voice && typeof s.voice === 'object' ? Object.values(s.voice) : [s.voice ?? (typeof s.say === 'string' ? s.say : null)])).filter(Boolean))]; }   // 상황별 음성(voice: { 종류: 문장 } · vk가 고름)은 모두 녹음
 const VOICE_DIR = new URL('../assets/tori/voice/', import.meta.url).href, voiceDir = (lang) => (lang === 'en' ? `${VOICE_DIR}en/` : VOICE_DIR);   // 영어 녹음은 voice/en/
-const AUTO_MS = 1000, LOOP_MS = 5000, READY_MAX_MS = 90000, PANEL_MS = 3000;   // 현장을 보여 준 뒤 창을 열기까지
+const AUTO_MS = 1000, LOOP_MS = 5000, READY_MAX_MS = 90000, PANEL_MS = 3000, VOICE_START_MS = 5000;   // 현장을 보여 준 뒤 창을 열기까지 · OS 음성이 이 안에 시작하지 않으면 읽는 시간으로
+const readyMax = () => globalThis.__toriReadyMax ?? READY_MAX_MS, panelMs = () => (globalThis.__toriFast ? 300 : PANEL_MS), voiceStartMs = () => (globalThis.__toriFast ? 400 : VOICE_START_MS);   // 시험 훅: 기다리는 한도 · 창 여는 시간 · 음성 시작 한도를 줄인다
 const readMs = (t, lang) => (globalThis.__toriFast ? 200 : 1500 + speakText(t, lang).length * (lang === 'en' ? 65 : 150));   // 소리 없이 읽는 시간 (한글 초당 약 7자 · 영문 약 15자) · __toriFast: 화면 점검(smoke)에서 읽는 시간을 건너뛰는 시험 훅
 
 const H = { incUns, UNS_CMD, unsSel, qSample, LINK_UNS, fos, fosOrder, clock, adv, lossTop, inc, arrived, escortGap, byRobot, sevK, ex, qx, prioOf, RADIUS };   // 영어 안내(js/tori-en.js)가 쓰는 공장 상태 도우미
 const KO_UI = { bubble: '토리 안내', name: '토리', voice: '음성으로 읽기', close: '접기', avatar: '토리 — 눌러서 안내 주제 고르기', gpu: '토리를 그리는 방식',
-  prev: '◀ 이전', next: '다음 ▶', topics: '주제', finish: '마치기', later: '다음에', start: '둘러보기 시작 ▶', lang: 'English guide', langBtn: 'EN' };
+  prev: '◀ 이전', next: '다음 ▶', topics: '주제', finish: '마치기', later: '다음에', start: '둘러보기 시작 ▶', lang: 'English guide', langBtn: 'EN',
+  // 실시간 안내 문장 (녹음 없음 — OS 음성): 준비 전 「다음」 · 대기 시간 초과 · 공장이 새로 시작됨
+  wait: '아직 준비되지 않았어요 — 준비되면 바로 넘어갈게요.', timeout: '기다리던 일이 대기 시간 안에 일어나지 않았어요. 이 예시는 여기서 멈추고 다음 주제로 넘어갈게요 — 「다시 기다리기」를 누르면 더 기다려요.', retry: '다시 기다리기 ↻',
+  stopped: '공장이 새로 시작돼서 하던 안내를 멈췄어요. 이어서 볼 주제를 골라 주세요.' };
+// 공장(시뮬레이션)을 보는 단계인지 — 아니면 공장이 새로 시작돼도 예약된 것이 옛 공장을 가리키지 않는다
+const simBound = (s) => !!(s.act || s.live || s.hold || s.ready || s.follow || s.camF || s.panel || s.net || typeof s.cam === 'function' || typeof s.say === 'function');
+const CTX = ['ev', 'qInj', 'guard', 'netOff', 'flushed', 'prop', 'applied', 'bot', 'exWip', 'exSer', 'exPal', 'exShip'];   // 단계 동작이 공장에서 얻어 둔 것 (그 실행에서만 유효)
 const CHAINS = { chain: CHAIN, qchain: QCHAIN, fchain: FCHAIN, kchain: KCHAIN, lchain: LCHAIN, ochain: OCHAIN }, CHAIN_EN = { chain: 'CHAIN', qchain: 'QCHAIN', fchain: 'FCHAIN', kchain: 'KCHAIN', lchain: 'LCHAIN', ochain: 'OCHAIN' };
 const EN_VOICE = [/andrew/i, /guy/i, /christopher/i, /daniel/i, /aaron/i, /alex/i, /google us english/i];
 const enVoice = (all) => { const en = all.filter((v) => /^en/i.test(v.lang)); for (const re of EN_VOICE) { const v = en.find((x) => re.test(x.name)); if (v) return v; } return en.find((v) => /^en-US/i.test(v.lang)) ?? en[0] ?? null; };
@@ -514,6 +524,7 @@ export class Tori {
   constructor(hooks) {
     this.h = hooks; this.topic = 'tour'; this.step = -1; this.open = false; this.talkT = 0; this.voice = store.get(VOICE) !== '0';   // 음성은 기본으로 켬 (🔊로 끄면 기억)
     this.lang = store.get(LANG) === 'en' ? 'en' : 'ko';   // 안내 언어 — 기본 한국어 (EN 버튼으로 바꾸면 기억)
+    this.run = 0; this.gen = 0;   // run: 공장 실행 번호(simChanged) · gen: 단계 세대 — 예약된 창 · 멈춤 · 추적 · 실시간 글 콜백은 자기 세대가 아니면 아무것도 하지 않는다
     this.el = document.createElement('div'); this.el.id = 'tori'; this.el.className = 'tori mini';
     this.el.innerHTML = `<div class="tori-bubble" role="dialog" aria-live="polite" aria-label="토리 안내">
         <div class="tori-h"><b>토리</b><span class="tori-n"></span><span class="tori-gpu" title="토리를 그리는 방식"></span>
@@ -527,13 +538,15 @@ export class Tori {
     this.figEl = this.el.querySelector('.tori-fig'); this.btnEl = this.el.querySelector('.tori-btns');
     this.el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-t]'), t = b?.dataset.t;
-      if (t === 'next') { const s = this.cur(), nx = s && this.nextTopic(s); if (nx) this.play(nx); else this.go(this.step + 1); }
+      if (t === 'next') { if (this.timedOut) this.retry(); else this.advance(); }
       else if (t === 'prev') this.go(this.step - 1);
       else if (t === 'topic') this.play(b.dataset.k);
       else if (t === 'menu') this.menu();
       else if (t === 'close' || t === 'skip') this.close();
       else if (t === 'lang') this.setLang(this.lang === 'en' ? 'ko' : 'en');
-      else if (t === 'voice') { this.voice = !this.voice; store.set(VOICE, this.voice ? '1' : '0'); this.syncVoice(); if (this.voice) this.speak(this.spokenText ?? this.sayEl.textContent); else this.stopVoice(); if (this.cur()) this.scheduleAuto(this.cur(), this.step === this.steps().length - 1); }
+      else if (t === 'voice') { this.voice = !this.voice; store.set(VOICE, this.voice ? '1' : '0'); this.syncVoice(); const s = this.cur();
+        if (s && this.timedOut) this.timeout(s);   // 시간 초과 안내 중이면 그 안내를 다시 (보통 자동 넘김으로 되돌리지 않는다)
+        else { if (this.voice) this.speak(this.spokenText ?? this.sayEl.textContent); else this.stopVoice(); if (s) this.scheduleAuto(s, this.step === this.steps().length - 1); } }
       else if (e.target === this.cv && !this.open) this.menu();
     });
     this.syncVoice(); this.syncLang();
@@ -555,7 +568,7 @@ export class Tori {
   setLang(L) {   // 지금 보던 단계(또는 메뉴)를 새 언어로 다시 말한다 — 단계 동작 · 카메라는 그대로
     this.lang = L; store.set(LANG, L); this.syncLang();
     if (!this.open) return;
-    if (this.step < 0) this.menu(); else { const s = this.cur(); if (s) { this.paint(s, this.step); this.scheduleAuto(s, this.step === this.steps().length - 1); } }
+    if (this.step < 0) this.menu(this.menuNote); else { const s = this.cur(); if (s && this.timedOut) { this.paint(s, this.step, true); this.timeout(s); } else if (s) { this.paint(s, this.step); this.scheduleAuto(s, this.step === this.steps().length - 1); } }
   }
   syncVoice() { const b = this.el.querySelector('[data-t="voice"]'); b.classList.toggle('on', this.voice); b.hidden = !('speechSynthesis' in window); }
   // 주제 마지막 단계의 다음 주제: 단계에 적힌 next, 없으면 주제에 적힌 next (매뉴얼처럼 환경마다 마지막 단계가 다른 주제)
@@ -567,39 +580,87 @@ export class Tori {
   greetIfFirst() { if (!store.get(SEEN)) setTimeout(() => this.play('tour'), 1200); }
 
   // 주제 메뉴 (작은 토리를 누르면)
-  menu() {
-    this.unhold(); this.restoreSpeed(); clearInterval(this.liveT); clearInterval(this.followT); clearTimeout(this.panelT); if (this.panelOpen) { this.h.closePanels?.(); this.panelOpen = false; } this.cancelAuto(); this.clearHl(); this.reveal([]); this.step = -1; this.open = true; this.el.classList.remove('mini');
-    this.nEl.textContent = ''; this.figEl.innerHTML = '';
-    this.say(this.lang === 'en' ? EN_UI.menu : MENU_SAY);
+  menu(note) {   // note: 안내를 멈춘 까닭 (공장이 새로 시작됨 — ui 문장 키) · 언어를 바꿔도 그 문장으로
+    this.unhold(); this.restoreSpeed(); this.stopTimers(); if (this.panelOpen) { this.h.closePanels?.(); this.panelOpen = false; } this.panelSrc = null; this.cancelAuto(); this.clearHl(); this.reveal([]); this.step = -1; this.open = true; this.el.classList.remove('mini');
+    this.nEl.textContent = ''; this.figEl.innerHTML = ''; this.noteK = null; this.timedOut = false; this.menuNote = note ?? null;
+    this.say(note ? this.ui[note] : this.lang === 'en' ? EN_UI.menu : MENU_SAY);
     this.btnEl.innerHTML = ['tour', 'facos', 'incident', 'trace', 'quality', 'kpi', 'data', 'link', 'docs', 'outcome'].map((k) => `<button type="button" data-t="topic" data-k="${k}">${this.tname(k)}</button>`).join('');
     this.btnEl.classList.add('menu');
   }
-  play(topic) { this.unhold(); this.restoreSpeed(); clearTimeout(this.panelT); this.h.closePanels?.(); this.panelOpen = false;   // 새 주제는 깨끗한 화면에서 — 앞 주제가 띄운 창(오케스트레이터 · FacOS · KPI · 로봇 정보 · 5G 지도 …)을 닫고 시작
-    this.topic = topic; this.list = null; this.ev = undefined; this.qInj = undefined; this.guard = undefined; this.netOff = undefined; this.flushed = undefined; this.prop = undefined; this.applied = undefined; this.bot = undefined; this.step = -1; this.go(0); }   // step = -1: 앞 주제에서 자동으로 넘어와도 첫 단계 동작(act — 인시던트 1배속 · KPI 30배속)을 실행한다 (go는 뒤로 갈 때 act를 건너뛴다)
+  play(topic) { this.unhold(); this.restoreSpeed(); this.stopTimers(); this.h.closePanels?.(); this.panelOpen = false; this.panelSrc = null;   // 새 주제는 깨끗한 화면에서 — 앞 주제가 띄운 창(오케스트레이터 · FacOS · KPI · 로봇 정보 · 5G 지도 …)을 닫고 시작
+    this.topic = topic; this.list = null; this.dropCtx(); this.modeAt = this.h.mode?.(); this.needMode = null; this.step = -1; this.go(0); }   // step = -1: 앞 주제에서 자동으로 넘어와도 첫 단계 동작(act — 인시던트 1배속 · KPI 30배속)을 실행한다 (go는 뒤로 갈 때 act를 건너뛴다)
+  stopTimers() { this.gen++; clearInterval(this.liveT); clearInterval(this.followT); clearInterval(this.holdT); clearTimeout(this.panelT); }   // 예약된 단계 콜백 무효 (세대를 올려 이미 불린 것도 막는다)
+  dropCtx() { for (const k of CTX) this[k] = undefined; this.camAt = null; this.fast = false; this.noteK = null; this.timedOut = false; }   // 공장에서 얻어 둔 것을 버린다 (공장에는 손대지 않음)
+  // 공장이 새로 시작됨 (main.js start() — 단계 · 라인 · 리셋). 옛 공장의 이벤트 · 제안 · 망 상태 · 로봇을 붙들고 설명을 이어 가지 않는다:
+  //   토리가 단계 진행 중 스스로 바꾼 것(go → setMode)은 그대로 진행 · 공장을 보지 않는 단계는 그대로 · 사용자가 다른 단계로 바꿨으면 안내를 멈추고 주제 메뉴 · 같은 단계에서 새로 시작(리셋 · 라인)이면 새 공장에서 다시 구성
+  simChanged() {
+    this.run++;
+    if (this.selfRun) return;
+    const s = this.open ? this.cur() : null, used = CTX.some((k) => this[k] != null), mode = this.h.mode?.(), spd = this.spd0;
+    this.unhold(); this.spd0 = undefined; this.dropCtx();   // 옛 공장에 되돌리기(망 복구 · 개선안 되돌림 · 감지 풀기)를 걸지 않는다 — 새 공장에 옛 ID로 가면 안 됨
+    if (spd != null) this.h.speed?.(spd);   // 배속은 화면 설정이라 원래대로
+    if (s && this.needMode && mode !== this.needMode) return this.menu('stopped');   // 이 주제가 요구한 단계(피지컬AI)에서 벗어남 — 말만 하는 단계라도 그 단계의 공장을 설명하는 중이다
+    if (!s || (!used && !simBound(s))) { this.modeAt = mode; return; }
+    if (mode !== this.modeAt) return this.menu('stopped');
+    if (used) this.play(this.topic); else { this.list = null; this.go(Math.min(this.step, this.steps().length - 1)); }
+  }
   unhold() { clearInterval(this.holdT); if (this.held) { this.held = false; if (this.heldByMe) this.h.pause?.(false); this.heldByMe = false; } }   // 토리가 직접 멈춘 경우에만 다시 재생 (사용자가 멈춰 둔 공장은 그대로)
   restoreSpeed() { if (this.ev?.quiet) this.ev.quiet = false;   // 인시던트 예시를 「AI 감지」 전에 벗어나면 감지를 막아 둔 이벤트를 풀어 준다
     this.fast = false; if (this.spd0 != null) this.h.speed?.(this.spd0); this.spd0 = undefined; if (this.netOff) { fos(this)?.setOnline(true); this.netOff = false; } if (this.applied === true && this.prop?.status === 'applied') { adv(this)?.revert(this.prop.id); this.applied = 'reverted'; } }   // KPI 주제에서 시연 적용 중 벗어나면 되돌림   // 인시던트 예시 배속 · FacOS 상위망 단절 시험 되돌림   // 인시던트 예시가 1배속으로 늦춘 것을 되돌림   // 시나리오(현장 이벤트 · 공정 편차)는 한 번 재생에 한 번만
 
+  // 그 단계를 떠나도 되는지 — 실제로 일어나기를 기다리는 단계(ready)는 그 일이 일어난 뒤에만 (「다음」 단추 · 자동 넘김 · go가 같은 검사를 쓴다)
+  canLeave(s = this.cur()) { return !(s?.ready && !s.ready(this)); }
+  advance() { const s = this.cur(); if (!s) return; if (!this.canLeave(s)) return this.waitHere(s); const nx = this.nextTopic(s); if (nx) this.play(nx); else this.go(this.step + 1); }
+  noteText(s) { return this.noteK ? (this.tx(s)[this.noteK] ?? this.ui[this.noteK]) : ''; }
+  text(s) { const L = this.tx(s), t = typeof L.say === 'function' ? L.say(this, H) : L.say; return this.noteK ? `${t} ⏳ ${this.noteText(s)}` : t; }   // 말풍선 글 (+ 기다림 · 시간 초과 안내)
+  waitHere(s) { this.noteK = 'wait'; this.sayEl.textContent = this.text(s); this.spokenText = this.noteText(s); this.speak(this.spokenText); }   // 준비 전 「다음」: 넘어가지 않고 기다린다고 알린다 (자동 넘김은 계속 기다림)
+  // 대기 시간 초과: 「완료」로 넘기지 않는다 — 알린 뒤 5초 뒤 이 예시를 건너뛰어 다음 주제로 (「다시 기다리기」로 더 기다림 · 그 사이 일어나면 이어서 진행)
+  timeout(s) {
+    this.cancelAuto(); this.timedOut = true; this.noteK = 'timeout'; this.sayEl.textContent = this.text(s);
+    const b = this.el.querySelector('[data-t="next"]'); if (b) b.textContent = this.ui.retry;
+    const tok = this.autoTok;
+    this.autoFn = () => { if (tok !== this.autoTok || !this.open) return; this.bar(LOOP_MS); this.autoT = setTimeout(() => { if (tok === this.autoTok && this.open) this.skipTopic(); }, LOOP_MS); };
+    this.spokenText = this.noteText(s); this.speak(this.spokenText); this.armAuto();
+  }
+  retry() { const s = this.cur(); if (!s) return; this.timedOut = false; this.noteK = 'wait'; this.paint(s, this.step, true); this.scheduleAuto(s, this.step === this.steps().length - 1); }
+  skipTopic() { const S = this.steps(), nx = S[S.length - 1]?.next ?? TOPICS[this.topic].next ?? null; if (nx) this.play(nx); else this.menu(); }
+  // 단계가 필요한 상위망 상태 (FacOS 단절 시험): net 'off' 단계에 있는 동안만 끊고, 벗어나면 다시 잇는다 — 이전으로 돌아와도 말과 망이 같다. 사용자가 이미 끊어 둔 망은 건드리지 않는다
+  syncNet(s) {
+    const F = fos(this); if (!F) return;
+    if (s.net === 'off') { if (F.online) { F.setOnline(false); this.netOff = true; this.netT0 = performance.now(); F.bus.send('zone:main', 'factory', 'status', { text: '정밀조립 상태 보고 (상위망 단절 중 · 토리 시험)' }); } else if (this.netOff === undefined) { this.netOff = false; this.netT0 = performance.now(); } }
+    else if (this.netOff) { this.flushed = F.setOnline(true); this.netOff = false; }
+  }
+  // 그 단계에서 보이는 창 · 카메라의 출처: 그 단계에 적혀 있지 않으면 앞 단계에서 이어받은 것 (순방향으로 왔을 때 보이던 화면)
+  srcOf(i, has) { const S = this.steps(); for (let k = i; k >= 0; k--) if (has(S[k])) return S[k]; return null; }
+
   go(i) {
     const S = this.steps();
     if (i < 0) return;
+    if (i > this.step && this.step >= 0 && !this.canLeave()) return this.waitHere(this.cur());   // 준비되지 않은 단계는 건너뛰지 않는다
     if (i >= S.length) return this.close();
-    this.clearHl(); clearInterval(this.liveT); clearInterval(this.followT); this.unhold();
-    const s = S[i], back = i < this.step; this.step = i; this.open = true; this.el.classList.remove('mini'); this.btnEl.classList.remove('menu');
-    if (s.mode && this.h.mode?.() !== s.mode) { this.h.setMode?.(s.mode); this.list = null; }   // 단계를 바꾸면 그 단계에 맞는 안내만 다시 고른다 (예: 보안 계층은 피지컬AI에서만)   // 단계 동작(act)보다 먼저 — 모드를 바꾸면 공장이 새로 시작하므로 act는 새 공장을 보고 판단한다 (KPI 첫 단계 30배속)
-    if (s.act && !back) s.act(this);   // 이전으로 돌아올 때는 다시 실행하지 않음 (이벤트를 또 만들지 않게)
-    if (s.view) this.h.flyTo?.(s.view);
-    if (s.cam) { const c = typeof s.cam === 'function' ? s.cam(this) : s.cam; if (c) this.h.camTo?.(c); }   // 그 현장으로 이동 · 확대
-    if (s.hold) { const f = () => { if (!this.held && s.hold(this)) { this.held = true; this.heldByMe = this.h.paused?.() === false; if (this.heldByMe) this.h.pause?.(true); } }; f(); this.holdT = setInterval(f, 300); }   // 명령이 내려지면 설명하는 동안 현장을 멈춤
-    if (s.follow || s.camF) { const f = () => { const c = s.camF?.(this); if (c) return this.h.camTo?.({ ...c, ms: 900 }); const p = s.follow && this.h.moverPos?.(s.follow(this)); if (p) this.h.camTo?.({ x: p.x, z: p.z, d: 9, ms: 900 }); }; f(); this.followT = setInterval(f, 1000); }   // 출동 로봇을 따라간다 · camF가 자리를 주면 그쪽(진입자 + 추적 로봇을 함께)
-    clearTimeout(this.panelT);
-    if (s.panel !== undefined) {   // 현장을 3초 보여 준 뒤 관련 창 (null = 창 닫기)
-      this.h.closePanels?.(); this.panelOpen = false;
-      if (s.panel) this.panelT = setTimeout(() => {   // 창 내용은 열 때 정한다 (그 사이 생긴 사례 · 제품 반영)
-        const p = typeof s.panel === 'function' ? s.panel(this) : s.panel;
-        if (p && this.cur() === s && this.open) { this.h.openPanel?.(p); this.panelOpen = true; }
-      }, PANEL_MS);
-    }
+    this.cancelAuto(); this.clearHl(); this.stopTimers(); this.unhold();
+    const s = S[i], back = i < this.step, seq = i === this.step + 1, g = this.gen; this.step = i; this.open = true; this.el.classList.remove('mini'); this.btnEl.classList.remove('menu');
+    this.noteK = null; this.timedOut = false; this.menuNote = null;
+    if (s.mode) this.needMode = s.mode;
+    if (s.mode && this.h.mode?.() !== s.mode) { const r = this.run; this.selfRun = true; try { this.h.setMode?.(s.mode); } finally { this.selfRun = false; } if (r !== this.run) this.dropCtx(); this.modeAt = s.mode; this.list = null; }   // 단계를 바꾸면 그 단계에 맞는 안내만 다시 고른다 (예: 보안 계층은 피지컬AI에서만)   // 단계 동작(act)보다 먼저 — 모드를 바꾸면 공장이 새로 시작하므로 act는 새 공장을 보고 판단한다 (KPI 첫 단계 30배속) · selfRun: 토리가 바꾼 것 (simChanged가 안내를 멈추지 않게)
+    if (s.act && !back) s.act(this);   // 이전으로 돌아올 때는 다시 실행하지 않음 (이벤트를 또 만들지 않게) — 되돌려야 하는 화면 · 망 상태는 아래에서 단계마다 맞춘다
+    this.syncNet(s);
+    // 카메라: 그 단계에 적힌 곳으로 — 이전 · 건너뛰어 들어온 단계에 적힌 곳이 없으면 앞 단계에서 이어받은 곳으로 (순방향과 같은 화면)
+    const cs = s.view || s.cam ? s : seq ? null : this.srcOf(i, (x) => x.view || x.cam);
+    if (cs?.view) this.h.flyTo?.(cs.view);
+    if (cs?.cam) { const k = S.indexOf(cs), c = back && this.camAt?.[k] ? this.camAt[k] : typeof cs.cam === 'function' ? cs.cam(this) : cs.cam; if (c) { (this.camAt ??= [])[k] = c; this.h.camTo?.(c); } }   // 그 현장으로 이동 · 확대 — 이전으로 돌아오면 그때 비춘 자리 그대로 (그 사이 로봇이 옮겨 갔어도)
+    if (s.hold) { const f = () => { if (g === this.gen && !this.held && s.hold(this)) { this.held = true; this.heldByMe = this.h.paused?.() === false; if (this.heldByMe) this.h.pause?.(true); } }; f(); this.holdT = setInterval(f, 300); }   // 명령이 내려지면 설명하는 동안 현장을 멈춤
+    if (s.follow || s.camF) { const f = () => { if (g !== this.gen) return; const c = s.camF?.(this); if (c) return this.h.camTo?.({ ...c, ms: 900 }); const p = s.follow && this.h.moverPos?.(s.follow(this)); if (p) this.h.camTo?.({ x: p.x, z: p.z, d: 9, ms: 900 }); }; f(); this.followT = setInterval(f, 1000); }   // 출동 로봇을 따라간다 · camF가 자리를 주면 그쪽(진입자 + 추적 로봇을 함께)
+    // 창: 그 단계에 적힌 창은 현장을 3초 보여 준 뒤 (null = 창 닫기) · 적혀 있지 않으면 앞 단계에서 이어받은 창 — 순서대로 넘어와 이미 떠 있으면 그대로, 아니면(이전 · 건너뜀 · 3초 전에 넘김) 바로 다시 연다
+    const ps = this.srcOf(i, (x) => x.panel !== undefined), own = ps === s;
+    if (ps && (own || !(seq && this.panelSrc === ps))) {   // 창을 다룬 단계가 앞에 없으면 손대지 않는다 (사용자가 연 창을 닫지 않게)
+      this.h.closePanels?.(); this.panelOpen = false; this.panelSrc = ps.panel ? null : ps;
+      const show = () => {   // 창 내용은 열 때 정한다 (그 사이 생긴 사례 · 제품 반영)
+        const p = typeof ps.panel === 'function' ? ps.panel(this) : ps.panel;
+        if (p && g === this.gen && this.open) { this.h.openPanel?.(p); this.panelOpen = true; this.panelSrc = ps; }
+      };
+      if (ps.panel) { if (own) this.panelT = setTimeout(show, panelMs()); else show(); }
+    } else if (!ps && !seq && this.panelOpen) { this.h.closePanels?.(); this.panelOpen = false; this.panelSrc = null; }   // 창을 열기 전 단계로 되돌아옴 — 토리가 연 창을 닫는다
     const hls = (s.hl ?? []).map((q) => document.querySelector(q)).filter(Boolean);
     this.reveal(hls);
     for (const e of hls) e.classList.add('tori-hl');
@@ -608,19 +669,23 @@ export class Tori {
     store.set(SEEN, '1');
   }
   // 단계의 글 · 그림 · 단추 (언어를 바꾸면 이것만 다시)
-  paint(s, i) {
-    const S = this.steps(), u = this.ui, en = this.lang === 'en', L = this.tx(s); clearInterval(this.liveT);
+  paint(s, i, quiet) {   // quiet: 글 · 단추만 다시 (소리는 그대로)
+    const S = this.steps(), u = this.ui, en = this.lang === 'en', L = this.tx(s), g = this.gen; clearInterval(this.liveT);
     this.nEl.textContent = `${this.tname(this.topic)}${i ? ` · ${i} / ${S.length - 1}` : ''}`;
     const ck = Object.keys(CHAINS).find((k) => s[k] != null);
     this.figEl.innerHTML = s.ring ? ringSvg(s.ring, s.at, en) : ck ? chainSvg(s[ck], en ? EN_CHAINS[CHAIN_EN[ck]] : CHAINS[ck]) : '';
-    const last = s.end || i === S.length - 1, nx = this.nextTopic(s), nextLabel = s.start ? u.start : nx ? `${this.tname(nx)} ▶` : last ? u.finish : u.next;
+    const last = s.end || i === S.length - 1, nx = this.nextTopic(s), nextLabel = this.timedOut ? u.retry : s.start ? u.start : nx ? `${this.tname(nx)} ▶` : last ? u.finish : u.next;
     this.btnEl.innerHTML = `${i ? `<button type="button" data-t="prev">${u.prev}</button>` : ''}${i === 0 && this.topic === 'tour' ? `<button type="button" data-t="skip">${u.later}</button>` : ''}<button type="button" data-t="menu">${u.topics}</button><button type="button" data-t="next" class="primary">${nextLabel}</button>`;
-    const text = () => (typeof L.say === 'function' ? L.say(this, H) : L.say);
-    this.say(text(), L.voice && typeof L.voice === 'object' ? L.voice[s.vk(this)] : L.voice);
-    if (s.live) this.liveT = setInterval(() => { const t = text(); if (t !== this.sayEl.textContent) this.sayEl.textContent = t; }, 1000);   // 진행 상황을 1초마다 다시 읽음 (소리는 처음 한 번)
+    const v = L.voice && typeof L.voice === 'object' ? L.voice[s.vk(this)] : L.voice;
+    if (quiet) this.sayEl.textContent = this.text(s); else this.say(this.text(s), this.noteK ? this.noteText(s) : s.vok && !s.vok(this) ? undefined : v);   // vok: 녹음 문장이 지금 현장과 맞을 때만 녹음을 쓴다 (아니면 말풍선 글을 OS 음성으로)
+    if (s.live || s.ready) this.liveT = setInterval(() => {   // 진행 상황을 1초마다 다시 읽음 (소리는 처음 한 번) · 기다리던 일이 일어나면 기다림 안내를 지우고, 시간 초과 뒤였으면 이어서 진행
+      if (g !== this.gen) return;
+      if (this.noteK && this.canLeave(s)) { const was = this.timedOut; this.noteK = null; this.timedOut = false; if (was) { this.paint(s, i, true); return this.scheduleAuto(s, i === S.length - 1); } }
+      const t = this.text(s); if (t !== this.sayEl.textContent) this.sayEl.textContent = t;
+    }, 1000);
   }
   say(text, voice) { this.sayEl.textContent = text; this.talkT = Math.min(6, 1.2 + text.length * (this.lang === 'en' ? 0.02 : 0.045)); this.spokenText = voice ?? text; this.speak(this.spokenText); }   // 말하는 입 모양 (글자 수만큼)
-  close() { this.unhold(); this.restoreSpeed(); clearInterval(this.liveT); clearInterval(this.followT); clearTimeout(this.panelT); if (this.panelOpen) { this.h.closePanels?.(); this.panelOpen = false; } this.cancelAuto(); this.clearHl(); this.reveal([]); this.open = false; this.step = -1; this.el.classList.add('mini'); this.stopVoice(); this.talkT = 0; }
+  close() { this.unhold(); this.restoreSpeed(); this.stopTimers(); if (this.panelOpen) { this.h.closePanels?.(); this.panelOpen = false; } this.panelSrc = null; this.noteK = null; this.timedOut = false; this.cancelAuto(); this.clearHl(); this.reveal([]); this.open = false; this.step = -1; this.el.classList.add('mini'); this.stopVoice(); this.talkT = 0; }
   clearHl() { document.querySelectorAll('.tori-hl').forEach((e) => e.classList.remove('tori-hl')); }
   // 가리킬 곳이 접힌 메뉴 안이면 먼저 펼친다 — 숨긴 왼쪽 · 오른쪽 패널, 접힌 FacOS 머리, 닫힌 존 에이전트 설정
   // 이 단계가 더는 가리키지 않으면 사용자가 둔 대로 다시 접는다 (연달아 가리키는 동안은 그대로 — 깜빡이지 않게)
@@ -637,7 +702,8 @@ export class Tori {
     for (const [k, [open, undo]] of need) if (!this.revealed.has(k)) { open(); this.revealed.set(k, undo); }
   }
   // ── 자동 넘김 ─────────────────
-  cancelAuto() { this.autoTok = (this.autoTok ?? 0) + 1; clearTimeout(this.autoT); this.onSpoken = null; this.el.querySelector('[data-t="next"]')?.classList.remove('auto'); }
+  cancelAuto() { this.autoTok = (this.autoTok ?? 0) + 1; clearTimeout(this.autoT); this.autoT = null; this.onSpoken = null; this.autoFn = null; this.el.querySelector('[data-t="next"]')?.classList.remove('auto'); }
+  bar(ms) { const b = this.el.querySelector('[data-t="next"]'); b?.classList.remove('auto'); b?.style.setProperty('--tori-auto', `${ms}ms`); void b?.offsetWidth; b?.classList.add('auto'); }   // 기다리는 동안 차오르는 막대 (1초 · 맺음말 5초)
   scheduleAuto(s, last) {
     this.cancelAuto();
     const nx = this.nextTopic(s);   // 주제 마지막 단계: 다음 주제가 이어져 있으면 말이 끝나고 1초 뒤 그 주제로 (메뉴 순서)
@@ -647,15 +713,24 @@ export class Tori {
     const tok = this.autoTok, t0 = performance.now();
     const countdown = () => {
       if (tok !== this.autoTok || !this.open) return;
-      if (s.ready && !s.ready(this) && performance.now() - t0 < READY_MAX_MS) { this.autoT = setTimeout(countdown, 500); return; }   // 실제로 일어날 때까지
-      const b = this.el.querySelector('[data-t="next"]'); b?.classList.remove('auto'); b?.style.setProperty('--tori-auto', `${wait}ms`); void b?.offsetWidth; b?.classList.add('auto');   // 기다리는 동안 차오르는 막대 (1초 · 맺음말 5초)
-      this.autoT = setTimeout(() => { if (tok === this.autoTok && this.open) { if (loop) this.play('tour'); else if (nx) this.play(nx); else this.go(this.step + 1); } }, wait);
+      if (!this.canLeave(s)) {   // 실제로 일어날 때까지 — 한도를 넘기면 넘어가지 않고 시간 초과로 (준비되지 않은 다음 단계가 현장을 멈추거나 「했어요」라고 말하지 않게)
+        if (performance.now() - t0 < readyMax()) { this.autoT = setTimeout(countdown, 500); return; }
+        return this.timeout(s);
+      }
+      this.bar(wait);
+      this.autoT = setTimeout(() => { if (tok !== this.autoTok || !this.open) return; if (!this.canLeave(s)) return countdown(); if (loop) this.play('tour'); else if (nx) this.play(nx); else this.go(this.step + 1); }, wait);
     };
-    // 말이 끝나면 시작 — 음성이 재생 중이면 끝날 때, 아니면 읽는 시간 뒤
-    if (this.speaking) this.onSpoken = () => { this.onSpoken = null; countdown(); };
-    else this.autoT = setTimeout(countdown, readMs(this.sayEl.textContent, this.lang));
+    this.autoFn = countdown; this.armAuto();
   }
-  spoken() { this.speaking = false; this.talkT = 0; this.onSpoken?.(); }
+  // 말이 끝나면 다음 동작(autoFn)을 시작 — 음성이 재생 중이면 끝날 때, 아니면 읽는 시간 뒤. 음성이 뒤늦게 실제로 시작하면(첫 클릭 · 음성 켜기) 읽는 시간 타이머를 버리고 음성 끝 기준으로 다시 건다
+  armAuto() {
+    const fn = this.autoFn; if (!fn) return;
+    clearTimeout(this.autoT); this.el.querySelector('[data-t="next"]')?.classList.remove('auto');
+    if (this.speaking) { this.autoT = null; this.onSpoken = () => { this.onSpoken = null; fn(); }; }
+    else { this.onSpoken = null; this.autoT = setTimeout(fn, readMs(this.sayEl.textContent, this.lang)); }
+  }
+  spoken() { this.speaking = false; this.talkT = 0; clearTimeout(this.voiceT); this.onSpoken?.(); }
+  voiceFail() { this.speaking = false; this.talkT = 0; clearTimeout(this.voiceT); this.armAuto(); }   // 소리를 낼 수 없음 — 끝난 것으로 치지 않고 읽는 시간을 준 뒤 넘어간다 (영영 기다리지도 않게)
 
   speak(text) {
     this.stopVoice(); if (!this.voice || !text) return;
@@ -669,19 +744,26 @@ export class Tori {
     const L = this.lang, key = voiceKey(text, L);
     if (this.recorded[L]?.has(key)) {   // 녹음 (자연스러운 남성 음성 · 한국어 InJoon / 영어 Andrew)
       const a = this.audio = new Audio(`${voiceDir(L)}${key}.mp3`);
-      this.speaking = true;
-      a.onplay = () => { this.talkT = 60; }; a.onended = a.onerror = () => { if (this.audio === a) this.spoken(); };
-      a.play().catch(() => { if (this.audio === a) { this.speaking = false; this.talkT = 0; } });
+      this.speaking = true; this.armAuto();   // 실제 재생을 시작했으니 읽는 시간으로 걸어 둔 자동 넘김은 음성 끝 기준으로
+      const fail = () => { if (this.audio !== a) return; this.audio = null; this.speakOS(text, L); };   // 녹음을 틀 수 없음(파일 오류 · 재생 거부) → 같은 문장을 OS 음성으로, 그것도 안 되면 읽는 시간으로 (세대가 지난 소리는 무시)
+      a.onplay = () => { if (this.audio === a) this.talkT = 60; }; a.onended = () => { if (this.audio === a) this.spoken(); }; a.onerror = fail;
+      let pr; try { pr = a.play(); } catch (e) { pr = Promise.reject(e); }
+      Promise.resolve(pr).catch(fail);
       return;
     }
-    const S = window.speechSynthesis; if (!S) return;   // 녹음이 없으면 OS 음성 (그 언어)
+    this.speakOS(text, L);
+  }
+  speakOS(text, L) {   // 녹음이 없으면 OS 음성 (그 언어)
+    const S = window.speechSynthesis; if (!S?.speak || typeof SpeechSynthesisUtterance === 'undefined') return this.voiceFail();
     const u = new SpeechSynthesisUtterance(speakText(text, L)); u.lang = L === 'en' ? 'en-US' : 'ko-KR'; u.rate = 1.05;
     u.voice = (L === 'en' ? enVoice : koVoice)(S.getVoices());
-    this.speaking = true;
-    u.onstart = () => { this.talkT = 60; }; u.onend = u.onerror = () => { if (this.utter === u) this.spoken(); };
-    this.utter = u; S.speak(u);
+    this.speaking = true; this.armAuto(); let started = false;
+    const fail = () => { if (this.utter !== u) return; this.utter = null; this.voiceFail(); };
+    u.onstart = () => { if (this.utter === u) { started = true; this.talkT = 60; } }; u.onend = () => { if (this.utter === u) this.spoken(); }; u.onerror = fail;
+    this.utter = u; try { S.speak(u); } catch { return fail(); }
+    clearTimeout(this.voiceT); this.voiceT = setTimeout(() => { if (this.utter === u && !started) { S.cancel(); fail(); } }, voiceStartMs());   // 막혀서 시작도 끝도 알리지 않는 경우 (첫 클릭 전 등)
   }
-  stopVoice() { this.speaking = false; this.utter = null; window.speechSynthesis?.cancel(); if (this.audio) { this.audio.pause(); this.audio = null; } }
+  stopVoice() { this.speaking = false; this.utter = null; clearTimeout(this.voiceT); window.speechSynthesis?.cancel(); if (this.audio) { this.audio.pause(); this.audio = null; } }
 
   // ── 아바타 (공장장 그림 애니메이션) ─────────────────
   // 투명 배경 PNG(assets/tori/manager.png)를 격자 판에 붙이고, 판의 꼭짓점을 매 프레임 조금씩 옮겨 움직임을 만든다:

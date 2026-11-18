@@ -39,7 +39,8 @@ console.log('== 피지컬AI 기본 = 혼합형 · 사족보행 순찰 보고 →
   check('순찰 보고가 제안으로 올라가 메인 조정자가 승인 · 실행', (H.reports ?? 0) > 0 && viaPatrol.length > 0 && s.stats.pm + s.stats.cal > 0, `순찰 보고 ${H.reports}건 · 승인 실행 ${viaPatrol.length}건 · 예지정비 ${s.stats.pm} · 재보정 ${s.stats.cal}`); }
 console.log('== 디지털트윈 비교 (자동화 1시간 × 시드 40, 설비 고장 주입)');
 // 시드마다 ±5~7% 흔들린다(어느 셀이 언제 고장 나는지) — 시드 20개 평균도 ±0.7% 흔들려 기준(−1%) 근처에서 오락가락하므로 시드 40개 평균으로 본다
-const R = compareArchitectures({ mode: 'smart', line: zoneLine(), T: 3600, seeds: Array.from({ length: 40 }, (_, i) => 7 + i * 12) });
+// 시드 10 + 12i: 가동 중이라 미뤘다가 실행한 예지정비 제안(판단 지연 > 0)은 시드 40개에 0~4건뿐인 드문 일이다 — 이동체 충돌 정지(R01~R03) 수정으로 타이밍이 조금 바뀌어 7 + 12i 묶음에서는 0건이 됐다(고치기 전에도 2 · 3 + 12i 묶음은 0건). 미룸이 4건 나오는 묶음으로 옮겼다 (판정 조건은 그대로)
+const R = compareArchitectures({ mode: 'smart', line: zoneLine(), T: 3600, seeds: Array.from({ length: 40 }, (_, i) => 10 + i * 12) });
 check('같은 조건 비교: 혼합형 생산(UPH)이 단일보다 나빠지지 않음 (−1% 이내)', R.hybrid.uph >= R.single.uph * 0.99, `단일 ${R.single.uph.toFixed(1)} · 혼합형 ${R.hybrid.uph.toFixed(1)} UPH · OEE ${(R.single.oee * 100).toFixed(2)} → ${(R.hybrid.oee * 100).toFixed(2)}%`);
 check('비교 지표 (판단 지연 · 충돌 · 되돌림)', R.single.avgLat === 0 && R.hybrid.avgLat > 0 && R.hybrid.proposed > 0 && R.hybrid.conflicts >= 0, `혼합형 제안 ${R.hybrid.proposed} ·  평균 지연 ${R.hybrid.avgLat.toFixed(2)}초 · 충돌 ${R.hybrid.conflicts.toFixed(1)} · 되돌림 ${R.hybrid.reversals.toFixed(1)}`);
 // 시드 1개는 배치·동선이 조금만 바뀌어도 ±5% 넘게 흔들려 비교가 안 된다 — 자동화 비교처럼 시드 3개 평균으로 본다

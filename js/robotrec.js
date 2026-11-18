@@ -18,7 +18,7 @@ export class RobotVideoRecorder {
   }
   attach(sim, runId, iso) {
     if (this.rec) this.stopSegment();   // 이전 실행의 시계로 먼저 닫는다 (새 시뮬레이션을 붙인 뒤 닫으면 종료 시각이 0초 근처로 찍혀 길이가 음수가 됐다)
-    this.sim = sim; this.runId = runId; this.iso = iso;
+    this.sim = sim; this.runId = runId; this.iso = iso; this.gen = (this.gen ?? 0) + 1;   // 실행 세대 — 이전 실행에서 건 비동기 읽기를 가려낸다
     this.on = recSupported() && !globalThis.window?.JIN3D_SHARED;
     this.acc = 1e9;
   }
@@ -90,7 +90,7 @@ export class RobotVideoRecorder {
       this.cw.setCam(this.cams[i], f);
       const H = this.rows * RREC.th, [x, y] = this.rect(i);
       this.rt.viewport.set(x, H - (y - RREC.head) - RREC.th, RREC.tw, RREC.th); this.rt.scissor.copy(this.rt.viewport); this.rt.scissorTest = true;
-      r.setRenderTarget(this.rt); renderAux(r, this.cw.scene, this.cams[i], RREC.th);
+      r.setRenderTarget(this.rt); renderAux(r, this.cw.scene, this.cams[i], RREC.th, { data: true });   // 녹화 영상은 데이터 — 작은 물체를 빼지 않는다
     }
     r.setRenderTarget(prev); r.shadowMap.autoUpdate = auto; hide.forEach((o, i) => (o.visible = vis[i]));
     // 녹화 주기는 실제 경과 시간으로 (프레임 시간 rdt는 0.1초로 잘려 들어와, 화면이 느리면 2장/초보다 훨씬 덜 찍혔다)
@@ -100,14 +100,15 @@ export class RobotVideoRecorder {
   }
   // 녹화 한 장: 칸 렌더 타깃을 비동기로 읽어(GPU를 멈추지 않음 — 지금 내용을 GPU 쪽 버퍼로 복사만 걸어 둠) 받으면 캔버스에 그린다.
   // 시각·구간 표시는 읽기를 건 시점 값. 앞 읽기가 아직이면 이번 장은 건너뛴다 (그 사이 칸 내용은 다음 장에 담김)
+  // 읽기를 건 구간 · 실행 세대 · 시계를 잡아 두고, 끝났을 때 그 구간이 그대로 열려 있을 때만 그린다 — 버퍼 · 해상도만 보면 구간을 바꾼 뒤(같은 해상도) 이전 구간 프레임이 새 구간 영상에 들어가고, 실행을 바꾼 뒤에는 새 시계로 이전 시각이 찍혔다
   capture() {
     const r = this.cw.renderer, W = this.cols * RREC.tw, H = this.rows * RREC.th;
-    if (this.canvas.width !== W || this.reading) return;
-    const buf = this.buf, t = this.sim.time, no = this.seg?.no, label = `REC · 로봇 카메라 ${this.tiles.length}대 전체 · ${this.sim.mode.label}`;
+    if (this.canvas.width !== W || this.reading || !this.seg) return;
+    const buf = this.buf, seg = this.seg, gen = this.gen, iso = this.iso, t = this.sim.time, label = `REC · 로봇 카메라 ${this.tiles.length}대 전체 · ${this.sim.mode.label}`;
     this.reading = true;
-    r.readRenderTargetPixelsAsync(this.rt, 0, 0, W, H, buf).then(() => { this.reading = false; if (this.buf === buf && this.canvas.width === W) this.paint(W, H, t, no, label); }, () => { this.reading = false; });
+    r.readRenderTargetPixelsAsync(this.rt, 0, 0, W, H, buf).then(() => { this.reading = false; if (this.seg === seg && this.gen === gen && this.buf === buf && this.canvas.width === W) this.paint(W, H, t, seg.no, label, iso); }, () => { this.reading = false; });
   }
-  paint(W, H, t, no, label) {
+  paint(W, H, t, no, label, iso = this.iso) {
     const g = this.ctx;
     const row = W * 4; for (let y = 0; y < H; y++) this.img.data.set(this.buf.subarray((H - 1 - y) * row, (H - y) * row), y * row);
     g.putImageData(this.img, 0, RREC.head);
@@ -120,7 +121,7 @@ export class RobotVideoRecorder {
     g.fillStyle = '#05080c'; g.fillRect(0, 0, W, RREC.head);
     g.fillStyle = Math.floor(performance.now() / 600) % 2 ? '#ff4d4d' : '#7a2020'; g.beginPath(); g.arc(16, RREC.head / 2, 6, 0, Math.PI * 2); g.fill();
     g.font = `800 16px ${FONT}`; g.fillStyle = '#e8edf2'; g.fillText(label, 30, RREC.head / 2);
-    g.textAlign = 'right'; g.fillStyle = '#7fb8cc'; g.fillText(`${this.iso(t).replace('T', ' ').slice(0, 19)} UTC · 구간 #${no ?? '-'}`, W - 10, RREC.head / 2); g.textAlign = 'left';
+    g.textAlign = 'right'; g.fillStyle = '#7fb8cc'; g.fillText(`${iso(t).replace('T', ' ').slice(0, 19)} UTC · 구간 #${no ?? '-'}`, W - 10, RREC.head / 2); g.textAlign = 'left';
   }
   // AAS 자산 하나가 찍힌 영상 목록 (끝난 구간): 파일 이름 · URL · 로컬 경로 · 카메라 · 칸 · 시각
   videosFor(assetKey) {

@@ -302,7 +302,7 @@ export class RobotCamWall {
     this.group.visible = false; if (this.view.selRing) this.view.selRing.visible = false;
     const auto = r.shadowMap.autoUpdate; r.shadowMap.autoUpdate = false;
     const prev = r.getRenderTarget();
-    r.setRenderTarget(this.capRT); r.clear(); renderAux(r, this.scene, this.capCam, h);
+    r.setRenderTarget(this.capRT); r.clear(); renderAux(r, this.scene, this.capCam, h, { data: true });   // 학습 영상 — 작은 부품 · 결함을 빼지 않는다
     // 비동기 읽기: 지금 그린 내용을 GPU 쪽 버퍼로 복사만 걸어 두고(다음 렌더와 섞이지 않음) 끝나면 받는다 — 동기 읽기는 GPU 작업이 다 끝날 때까지 화면을 멈췄다
     const buf = new Uint8Array(w * h * 4), read = r.readRenderTargetPixelsAsync(this.capRT, 0, 0, w, h, buf);
     r.setRenderTarget(prev); r.shadowMap.autoUpdate = auto;

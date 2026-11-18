@@ -47,7 +47,7 @@ export class CCTVRecorder {
   // 운전 시작·단계 전환 때: 지금 녹화 중인 구간을 닫고 새로 시작
   attach(sim, runId, iso) {
     if (this.rec) this.stopSegment();   // 이전 실행의 시계로 먼저 닫는다 (새 시뮬레이션을 붙인 뒤 닫으면 종료 시각이 0초 근처로 찍혀 길이가 음수가 됐다)
-    this.sim = sim; this.runId = runId; this.iso = iso;
+    this.sim = sim; this.runId = runId; this.iso = iso; this.gen = (this.gen ?? 0) + 1;   // 실행 세대 — 이전 실행에서 건 비동기 읽기를 가려낸다
     this.on = recSupported() && !globalThis.window?.JIN3D_SHARED;   // 공유 페이지(아티팩트)는 파일 저장이 막혀 있어 녹화하지 않는다
     this.cv.recording = this.on;
     this.acc = 1e9;
@@ -137,20 +137,21 @@ export class CCTVRecorder {
     this.capture();
   }
   // 녹화 한 장: 전광판을 합성해 그린 뒤 비동기로 읽어(GPU를 멈추지 않음) 받으면 캔버스에 그린다. 시각·구간 표시는 읽기를 건 시점 값.
-  // 앞 읽기가 아직이면 이번 장은 건너뛴다
+  // 앞 읽기가 아직이면 이번 장은 건너뛴다. 읽기를 건 구간 · 실행 세대 · 시계를 잡아 두고, 끝났을 때 그 구간이 그대로 열려 있을 때만 그린다
+  // (버퍼 · 해상도만 보면 구간을 바꾼 뒤 이전 구간 프레임이 새 구간 영상에 들어가고, 실행을 바꾼 뒤에는 새 시계로 이전 시각이 찍혔다)
   capture() {
-    if (this.reading) return;
+    if (this.reading || !this.seg) return;
     const r = this.getRenderer(), { w, h, head } = this.size(), cv = this.cv;
     if (!this.rt || this.rt.width !== w || this.rt.height !== h) { this.rt?.dispose(); this.rt = new THREE.WebGLRenderTarget(w, h); this.rt.texture.colorSpace = THREE.SRGBColorSpace; this.buf = new Uint8Array(w * h * 4); this.img = new ImageData(w, h); }
     if (this.canvas.width !== w || this.canvas.height !== h + head) { this.stopSegment(); return; }   // 배치가 바뀌면(공정 설계) 새 구간
     if (this.base.material.map !== cv.rt.texture || this.over.material.map !== cv.overTex) { this.base.material.map = cv.rt.texture; this.over.material.map = cv.overTex; this.base.material.needsUpdate = this.over.material.needsUpdate = true; }
     const prev = r.getRenderTarget(), auto = r.shadowMap.autoUpdate; r.shadowMap.autoUpdate = false;
     r.setRenderTarget(this.rt); r.setClearColor(0x05080c, 1); r.clear(); r.render(this.scene, this.cam); r.setRenderTarget(prev); r.shadowMap.autoUpdate = auto;
-    const buf = this.buf, t = this.sim.time, no = this.seg?.no, label = `REC · CCTV ${cv.slots.length}대 전체 · ${this.sim.mode.label} · 피지컬AI 실증 메타팩토리 NVR`;
+    const buf = this.buf, seg = this.seg, gen = this.gen, iso = this.iso, t = this.sim.time, label = `REC · CCTV ${cv.slots.length}대 전체 · ${this.sim.mode.label} · 피지컬AI 실증 메타팩토리 NVR`;
     this.reading = true;
-    r.readRenderTargetPixelsAsync(this.rt, 0, 0, w, h, buf).then(() => { this.reading = false; if (this.buf === buf && this.canvas.width === w && this.canvas.height === h + head) this.paint(w, h, head, t, no, label); }, () => { this.reading = false; });
+    r.readRenderTargetPixelsAsync(this.rt, 0, 0, w, h, buf).then(() => { this.reading = false; if (this.seg === seg && this.gen === gen && this.buf === buf && this.canvas.width === w && this.canvas.height === h + head) this.paint(w, h, head, t, seg.no, label, iso); }, () => { this.reading = false; });
   }
-  paint(w, h, head, t, no, label) {
+  paint(w, h, head, t, no, label, iso = this.iso) {
     const row = w * 4; for (let y = 0; y < h; y++) this.img.data.set(this.buf.subarray((h - 1 - y) * row, (h - y) * row), y * row);
     const g = this.ctx; g.putImageData(this.img, 0, head);
     // 머리 띠: ● REC · 카메라 수 · 공장 단계 · 시각 · 구간
@@ -158,7 +159,7 @@ export class CCTVRecorder {
     g.fillStyle = Math.floor(performance.now() / 600) % 2 ? '#ff4d4d' : '#7a2020'; g.beginPath(); g.arc(18, head / 2, 7, 0, Math.PI * 2); g.fill();
     g.font = `800 18px ${FONT}`; g.fillStyle = '#e8edf2'; g.textBaseline = 'middle';
     g.fillText(label, 34, head / 2);
-    g.textAlign = 'right'; g.fillStyle = '#7fb8cc'; g.fillText(`${this.iso(t).replace('T', ' ').slice(0, 19)} UTC · 구간 #${no ?? '-'}`, w - 12, head / 2); g.textAlign = 'left';
+    g.textAlign = 'right'; g.fillStyle = '#7fb8cc'; g.fillText(`${iso(t).replace('T', ' ').slice(0, 19)} UTC · 구간 #${no ?? '-'}`, w - 12, head / 2); g.textAlign = 'left';
   }
   stats() {
     const cur = this.seg ? (performance.now() - this.seg.real0) / 1000 : 0;

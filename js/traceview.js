@@ -79,10 +79,11 @@ function serialTab(sim) {
   if (q) us = us.filter((u) => (u.serial ?? '').includes(q) || u.wip.includes(q) || (u.ship?.sscc ?? '').includes(q) || String(u.ship?.truck ?? '').toUpperCase().includes(q));
   const list = us.slice(-60).reverse(), sel = (st.sid && H.byId.get(st.sid)) || list.find((u) => u.serial) || list[0];
   const rows = list.map((u) => `<tr data-qt-sid="${idOf(u)}" class="${sel === u ? 'sel' : ''}"><td><b class="uidc" title="WIP ${u.wip}">${idOf(u)}</b></td><td>${PRODUCT[u.product] ?? u.product}</td><td>${stateChip(u)}</td><td>${u.mark ? `${u.mark.symbol === 'DM' ? 'DataMatrix' : 'QR'} ${u.mark.grade}${u.mark.tries > 1 ? ' ↻' : ''}` : '-'}</td><td>${u.ship?.truck ?? (u.ship?.sscc ? '상차 중' : '-')}</td></tr>`).join('');
-  const S = H.stats;
+  const S = H.stats, AL = H.allocState?.();   // 앱: 서버 번호 범위 배정 상태 (응답 전 · 실패 중에는 발행 보류)
   return `<div class="qt-split">
     <div><div class="qt-search"><input id="qtSearch" type="search" placeholder="시리얼 · WIP ID · SSCC · 트럭 검색 (예: DT-, WIP-EA, 0880)" value="${esc(st.q)}" /></div>
       <p class="vla-note">발행 ${S.issued} · 재마킹 ${S.relabel} · 판독 불가 ${S.markNg} · 출하 ${S.shipped}개 (팔레트 ${S.pallets}) · WIP ${S.wip}</p>
+      ${AL ? `<p class="vla-note">번호 배정: ${AL.ok ? '' : '<b class="qt-chip warn">발행 보류</b> '}${esc(AL.text)}</p>` : ''}
       <table class="vla-t qt-list"><thead><tr><th>시리얼 (미발행 = WIP ID)</th><th>제품</th><th>상태</th><th>마킹</th><th>트럭</th></tr></thead><tbody>${rows || '<tr><td colspan="5">해당 제품 없음</td></tr>'}</tbody></table></div>
     <div>${sel ? unitHTML(sim, sel) : '<p class="vla-note">아직 투입된 제품이 없습니다.</p>'}</div></div>`;
 }
@@ -96,7 +97,7 @@ function unitHTML(sim, u) {
       <tr><td>발행·마킹 셀</td><td>${ZONE_KO[u.zone]} ${esc(m.atName)} · ${clk(m.t)} (${esc(I.how)} · 판정과 병렬)</td></tr>
       <tr><td>판독 검증</td><td>등급 ${m.grades.map((g, i) => `<b class="${'DF'.includes(g) ? 'dn' : ''}">${g}</b>${i === 0 && m.grades.length > 1 ? ` → 재${m.symbol === 'DM' ? '각인' : '부착'} → ` : ''}`).join('')} (합격 C 이상)${m.manual ? ' · 수작업 재부착' : ''}${m.ok ? '' : ' · <em class="dn">판독 불가 — 부적합</em>'}</td></tr>
       <tr><td>EPC</td><td><code class="qt-wrap">${esc(u.epc)}</code></td></tr></table>`
-    : `<p class="qt-ins">${u.status === 'ng' ? '체결 전수 검사 NG — 시리얼을 발행하지 않고 WIP ID로 배출함 격리' : `아직 최종 검사 전 — WIP ID로 공정 이력을 쌓는 중 (${P?.cells.join('·')} 합격 시 시리얼 발행)`}</p>`;
+    : `<p class="qt-ins">${u.status === 'ng' ? '체결 전수 검사 NG — 시리얼을 발행하지 않고 WIP ID로 배출함 격리' : u.serialWait ? '최종 검사 합격 — 서버 번호 범위를 기다리는 중 (시리얼 발행 보류 · 받으면 이어서 발행 · 그동안 출하하지 않음)' : `아직 최종 검사 전 — WIP ID로 공정 이력을 쌓는 중 (${P?.cells.join('·')} 합격 시 시리얼 발행)`}</p>`;
   const steps = (u.steps ?? []).map((p, i) => `<li class="${p.result === 'NG' ? 'ng' : ''}"><div class="qt-st"><b>${i + 1}. ${esc(p.name)}</b> ${p.result ? chip(`판정 ${p.result}`, p.result === 'NG' ? 'bad' : 'good') : ''}<small>${clk(p.tIn)} → ${clk(p.tOut)}${p.cycle != null ? ` · ${p.cycle}초` : ''}</small></div></li>`).join('');
   const shipLine = u.ship ? `팔레트 SSCC <code>(00)${u.ship.sscc}</code>${u.ship.truck ? ` → ${esc(u.ship.truck)}${u.ship.shipment ? ` (출하 ${esc(u.ship.shipment)})` : ''} · ${clk(u.ship.t)} 출하` : ' · 상차 중'}` : u.loc === 'fg' ? '구분 적재 · 출하 대기' : LOC[u.loc]?.[0] ?? u.loc;
   const disp = u.disp ? `<p class="qt-ins">처분: <b>${u.disp.d === 'rework' ? `재작업${u.disp.done ? ' → 재검 합격 (시리얼 유지)' : ' 중'}` : '폐기 (시리얼 폐기 기록 · 재사용 금지)'}</b> — ${esc(u.disp.why)} · ${clk(u.disp.t)}</p>` : '';

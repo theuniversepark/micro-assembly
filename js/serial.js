@@ -11,6 +11,7 @@
 //    부적합품 처리 판정(MRB: 재작업 → 재검 합격 시 시리얼 유지 · 폐기 → 시리얼 폐기 기록) · 로트 선별검사 · 샘플링 강화(ISO 2859-1 까다로운 검사 단순화) · 8D는 capa.js
 // 렌더링과 분리 — 헤드리스 시험에서도 같은 흐름. 시뮬레이션 난수(sim.rand)를 쓰지 않는다 (자기 난수) — 생산 흐름이 그대로다.
 import { qrMatrix, dataMatrix, FNC1, GS } from './codes.js';
+import { SerialAllocator, reserveVia } from './serialalloc.js';
 
 const mulberry = (a) => () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 export const GS1_PREFIX = '8800000';   // 가상 GS1 업체코드 (880 = 대한민국) — 시뮬레이션용
@@ -62,22 +63,40 @@ export class SerialHub {
     this.sim = sim; this.r = mulberry((seed * 69069 + 17) >>> 0);
     this.ymd = sim.trace?.ymd ?? (() => { const d = new Date(); return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; })();
     this.wipSeq = {}; this.serSeq = {}; this.lotSeq = 0; this.sampleSeq = 0; this.sinceSample = 0; this.unsampled = {};
-    this.ctr = { pal: 0, ship: 0 };   // 팔레트 SSCC · 출하 ID 일련번호 — 앱(main.js)이 실행 사이에 공유하는 객체로 바꿔 끼운다 (단계 전환·리셋해도 재사용 금지)
+    this.ctr = { pal: 0, ship: 0 };   // 팔레트 SSCC · 출하 ID 일련번호 — 웹 버전(main.js)이 실행 사이에 공유하는 객체로 바꿔 끼운다 (단계 전환·리셋해도 재사용 금지)
+    this.alloc = null; this.waitIssue = []; this.shipFree = [];   // 앱(서버 있음): 서버가 예약해 준 번호 범위 배정기 (js/serialalloc.js) · 번호를 기다리는 발행 보류 · 잡아 두고 안 쓴 출하 번호
     this.units = []; this.byId = new Map(); this.fg = {}; this.lots = []; this.pallets = []; this.events = []; this.jobs = [];
     this.byCell = {}; this.tight = {}; this.lastSample = {}; this.feed = []; this.feedOn = false;
-    this.stats = { wip: 0, issued: 0, byZone: { main: 0 }, relabel: 0, markNg: 0, shipped: 0, pallets: 0, lots: 0, held: 0, released: 0, sorted: 0, caught: 0, rework: 0, scrap: 0, recall: 0, samples: 0, sampleNg: 0 };
+    this.stats = { wip: 0, issued: 0, byZone: { main: 0 }, relabel: 0, markNg: 0, shipped: 0, pallets: 0, lots: 0, held: 0, released: 0, sorted: 0, caught: 0, rework: 0, scrap: 0, recall: 0, samples: 0, sampleNg: 0, deferred: 0 };
     sim.serials = this;
   }
   get mode() { return this.sim.mode?.key ?? 'smart'; }
   now() { return this.sim.time ?? 0; }
   later(dt, fn) { this.jobs.push({ at: this.now() + dt, fn }); }
-  update() { if (!this.jobs.length) return; const t = this.now(), due = this.jobs.filter((j) => j.at <= t); if (!due.length) return; this.jobs = this.jobs.filter((j) => j.at > t); for (const j of due) j.fn(); }
+  update() { if (this.alloc) { this.alloc.pump(); if (this.waitIssue.length) this.issueWaiting(); } if (!this.jobs.length) return; const t = this.now(), due = this.jobs.filter((j) => j.at <= t); if (!due.length) return; this.jobs = this.jobs.filter((j) => j.at > t); for (const j of due) j.fn(); }
   // 기록 하나 (EPCIS 이벤트 ID urn:uuid 포함) — feed: 화면이 가져가 EPCIS 저장소(앱 내장 · 브라우저 메모리)로 보낸다 (js/epcis.js)
   ev(e) { const r = { t: this.now(), uid: uid(), ...e }; this.events.push(r); if (this.events.length > 4000) this.events.shift(); if (this.feedOn) { this.feed.push(r); if (this.feed.length > 20000) this.feed.shift(); } }
   drain() { const f = this.feed; this.feed = []; return f; }
   log(lv, title, x) { if (!this.sim.quiet) this.sim.log?.(lv, title, x); }
   idOf(u) { return u.serial ?? u.wip; }
   q(type, payload) { this.sim.fac?.qual?.(type, payload); }   // 품질 기록 → FAC 이벤트 → (앱) ERPNext 품질 모듈 (server/erpnext-bridge.mjs)
+
+  // ── 번호 배정 (앱 — 서버 있음) ─────────────────
+  // 서버가 예약해 준 범위 안에서만 번호를 쓴다 — 응답 전 · 실패 중에는 발행을 보류한다(생산은 그대로 흐름). 웹 버전 · 헤드리스는 배정기 없이 자체 카운터
+  serverAllocator(fetchImpl, opt) { return new SerialAllocator(reserveVia(fetchImpl), opt); }
+  useAllocator(a) { this.alloc = a; a.setYmd(this.ymd); a.prime([...new Set(Object.values(PRODUCTS).map((p) => `ser:${p.code}`)), 'pal', 'ship']); return a; }
+  allocState() { return allocState(this); }
+  nextNo(kind, code) { return this.alloc ? this.alloc.next(kind, code) : kind === 'ser' ? (this.serSeq[code] = (this.serSeq[code] ?? 0) + 1) : ++this.ctr[kind]; }
+  // 번호를 기다리던 제품 — 합격 순서대로 이어서 발행 (번호가 없는 제품코드는 이번에는 건너뜀)
+  issueWaiting() {
+    const dry = new Set();
+    this.waitIssue = this.waitIssue.filter((u) => {
+      if (u.serial || this.byId.get(u.wip) !== u) return false;
+      const c = PRODUCTS[u.product]?.code ?? 'WP'; if (dry.has(c)) return true;
+      this.issue(u, u.serialWait); if (!u.serial) dry.add(c);
+      return !u.serial;
+    });
+  }
 
   // ── 1단: WIP ID (투입) ─────────────────
   wipId(product) { const c = PRODUCTS[product]?.code ?? 'WP', n = (this.wipSeq[c] = (this.wipSeq[c] ?? 0) + 1); this.stats.wip++; return `WIP-${c}-${this.ymd}-${String(n).padStart(6, '0')}`; }
@@ -105,7 +124,9 @@ export class SerialHub {
   issue(item, at) {
     const u = this.unitOf(item); if (!u || u.serial) return u;
     if (!u.mplan) this.plan(item);
-    const P = PRODUCTS[u.product], c = P?.code ?? 'WP', n = (this.serSeq[c] = (this.serSeq[c] ?? 0) + 1), t = this.now();
+    const P = PRODUCTS[u.product], c = P?.code ?? 'WP', n = this.nextNo('ser', c), t = this.now();
+    if (n == null) { if (!u.serialWait) { u.serialWait = { cell: at.cell, name: at.name }; this.waitIssue.push(u); this.stats.deferred++; } return u; }   // 서버 번호 범위가 아직 없음 — 발행 보류 (issueWaiting이 이어서 발행 · 그동안 출하 대상에서 뺀다)
+    const late = !!u.serialWait; delete u.serialWait;
     u.serial = `${c}-${this.ymd}-${String(n).padStart(6, '0')}`;
     u.pdate = this.ymd; u.plot = `${this.ymd}${c}`; u.gtin = gtinOf(u.product);
     u.epc = `urn:epc:id:sgtin:${GS1_PREFIX}.0${P?.ref ?? '00009'}.${u.serial}`;
@@ -118,6 +139,7 @@ export class SerialHub {
     this.ev({ type: 'commission', id: u.serial, wip: u.wip, zone: u.zone, cell: at.cell, symbol: sym, grade: g });
     if (pl.tries > 1) this.log('warn', `${ZONE_KO[u.zone]} ${at.name ?? at.cell} 판독 등급 ${pl.grades[0]} — ${sym === 'DM' ? '재각인' : '라벨 재부착'}`, { obs: `${u.serial} 첫 판독 ${pl.grades[0]} (합격 C 이상)`, act: pl.ng ? `재${sym === 'DM' ? '각인' : '부착'} 후에도 ${g} — 부적합 처리` : `재마킹 후 ${g} 합격` });
     if (pl.ng) this.markNg(u, bc);
+    if (late && u.loc === 'fg') { this.ev({ type: 'store', id: u.serial, zone: u.zone }); this.sampleTick(u); }   // 보류된 사이 이미 적재됨 — 적재 기록 · 샘플 계수를 지금
     return u;
   }
   // 재마킹 후에도 판독 불가 — 라벨은 수작업 재부착 후 해제, 금속 각인은 재각인 불가(표면 손상) → 폐기
@@ -141,21 +163,34 @@ export class SerialHub {
   }
 
   // ── 출하 (shipping.js): 보류 아닌 것만 · 팔레트 SSCC ─────────────────
-  shippableUnits(p) { return (this.fg[p] ?? []).filter((u) => !u.hold && u.loc === 'fg' && u.status !== 'scrap' && u.status !== 'ng'); }
+  // 앱: 팔레트 SSCC · 출하 ID 번호가 없으면(서버 범위 대기) 출하도 보류 · 시리얼 발행을 기다리는 제품은 싣지 않는다
+  shippableUnits(p) {
+    if (this.alloc && !(this.alloc.left('pal') > 0 && (this.shipFree.length || this.alloc.left('ship') > 0))) { this.alloc.pump(); return []; }
+    return (this.fg[p] ?? []).filter((u) => !u.hold && !u.serialWait && u.loc === 'fg' && u.status !== 'scrap' && u.status !== 'ng');
+  }
   shippable(p) { return this.shippableUnits(p).length; }
   heldIn(p) { return (this.fg[p] ?? []).filter((u) => u.hold).length; }
   take(p, k, by) {
     const us = this.shippableUnits(p).slice(0, k); if (!us.length) return null;
-    const pal = { sscc: ssccOf(++this.ctr.pal), product: p, units: us.map((u) => this.idOf(u)), t: this.now(), by, truck: null };
+    const pal = { sscc: ssccOf(this.nextNo('pal')), product: p, units: us.map((u) => this.idOf(u)), t: this.now(), by, truck: null };
+    if (this.alloc) pal.shipNo = this.shipFree.shift() ?? this.alloc.next('ship');   // 출하 번호도 지금 잡아 둔다 — 도크에서 번호가 없어 출하 기록이 멈추지 않게
     for (const u of us) { u.loc = 'loading'; this.unFG(u); u.ship = { sscc: pal.sscc }; }
     this.pallets.unshift(pal); if (this.pallets.length > 300) this.pallets.pop();
     this.ev({ type: 'aggregate', id: pal.sscc, children: pal.units });
     return { pal, units: us };
   }
   // 출하 ID: 트럭 한 번 출발 = 출하 1건. 트럭 표시 이름(화물트럭-N)은 실행마다 다시 시작하므로 거래 식별자로 쓰지 않는다
-  shipmentId(t) { return (t.shipId ??= `SHP-${this.ymd}-${String(++this.ctr.ship).padStart(5, '0')}`); }
+  shipmentId(t, pal = null) {
+    if (!t.shipId) {
+      const n = this.alloc ? pal?.shipNo ?? this.shipFree.shift() ?? this.alloc.next('ship') : ++this.ctr.ship; if (n == null) return null;
+      if (pal && n === pal.shipNo) pal.shipNo = null;
+      t.shipId = `SHP-${this.ymd}-${String(n).padStart(5, '0')}`;
+    }
+    if (pal?.shipNo != null) { this.shipFree.push(pal.shipNo); pal.shipNo = null; }   // 트럭에 이미 출하 ID가 있음 — 잡아 둔 번호는 다음 팔레트가 쓴다
+    return t.shipId;
+  }
   ship(lot, t) {
-    if (!lot) return; const truck = t?.id ?? String(t), shipment = typeof t === 'object' ? this.shipmentId(t) : truck;
+    if (!lot) return; const truck = t?.id ?? String(t), shipment = typeof t === 'object' ? this.shipmentId(t, lot.pal) : truck;
     Object.assign(lot.pal, { truck, shipment, tShip: this.now() }); this.stats.pallets++;
     for (const u of lot.units) { u.loc = 'shipped'; u.ship = { sscc: lot.pal.sscc, truck, shipment, t: this.now() }; this.stats.shipped++; }
     this.ev({ type: 'ship', id: lot.pal.sscc, truck, shipment, n: lot.units.length });
@@ -165,7 +200,7 @@ export class SerialHub {
     const P = this.pallets.filter((p) => p.shipment === shipment);
     return { shipment, truck: P[0]?.truck ?? null, sscc: P.map((p) => p.sscc), serials: P.flatMap((p) => p.units) };
   }
-  unload(lot) { if (!lot) return; for (const u of lot.units) { u.loc = 'fg'; u.ship = null; (this.fg[u.product] ??= []).unshift(u); } this.pallets = this.pallets.filter((x) => x !== lot.pal); }
+  unload(lot) { if (!lot) return; if (lot.pal.shipNo != null) { this.shipFree.push(lot.pal.shipNo); lot.pal.shipNo = null; } for (const u of lot.units) { u.loc = 'fg'; u.ship = null; (this.fg[u.product] ??= []).unshift(u); } this.pallets = this.pallets.filter((x) => x !== lot.pal); }
   unFG(u) { const q = this.fg[u.product]; if (!q) return; const i = q.indexOf(u); if (i >= 0) q.splice(i, 1); }
   // 완제품 수량에서 빼기 (폐기·격리) — 구분 적재장
   dropStock(u) {
@@ -311,6 +346,16 @@ export class SerialHub {
   cellSummary(zone, cell) { return this.byCell[`${zone}:${cell}`] ?? null; }
 }
 const uid = () => (globalThis.crypto?.randomUUID ? `urn:uuid:${globalThis.crypto.randomUUID()}` : `urn:uuid:${'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16))}`);   // EPCIS eventID — 시뮬레이션 난수와 무관
+
+// 화면 표시 — 번호 배정 상태 (데이터 연동 창 EPCIS 칸 · 품질 추적 창 시리얼·출하 탭). 배정기가 없으면(웹 버전 · 헤드리스) null
+export function allocState(H) {
+  const A = H?.alloc; if (!A) return null;
+  const S = A.status(), wait = H.waitIssue.length, KO = (k) => (k === 'pal' ? '팔레트 SSCC' : k === 'ship' ? '출하 ID' : `시리얼 ${k.slice(4)}`);
+  const text = S.state === 'retry' ? `서버 번호 예약 실패 ${S.fails}회 (${S.lastError}) — ${Math.ceil(S.retryInMs / 1000)}초 뒤 다시 요청 · 그동안 발행 보류 (1번부터 발행하지 않음)`
+    : S.state === 'wait' ? `서버에서 번호 범위를 받는 중 (${S.dry.map(KO).join(' · ') || '요청 중'}) — 받을 때까지 발행 보류`
+    : `서버가 예약해 준 범위에서 발행 · 남은 번호 ${Object.entries(S.left).map(([k, n]) => `${KO(k)} ${n}`).join(' · ')}`;
+  return { state: S.state, ok: S.state === 'ok', wait, text: `${text}${wait ? ` · 시리얼 발행 대기 ${wait}개` : ''}`, used: S.used, reserved: S.reserved };
+}
 
 export function serialsCSV(H) {
   const head = ['wip_id', 'serial', 'zone', 'product', 'gtin', 'lot', 'status', 'location', 'hold', 'symbol', 'mark_cell', 'verify_grade', 'mark_tries', 'serial_time_s', 'sscc', 'truck', 'disposition'];

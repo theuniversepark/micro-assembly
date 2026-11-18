@@ -9,7 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { runAgentTurn, runAgentTurnSub, MODEL } from './llm-agent.mjs';
 import { useSubscription } from './claude-sub.mjs';
 import { designLine } from './line-designer.mjs';
-import { startMqtt, mqttStatus, mqttPublish, unsTakeCommands, unsAclPassword, unsBridgeConfig, unsBridgeSave, setUnsTap } from './mqtt-gateway.mjs';
+import { startMqtt, mqttStatus, mqttPublish, mqttDedup, unsTakeCommands, unsAclPassword, unsBridgeConfig, unsBridgeSave, setUnsTap } from './mqtt-gateway.mjs';
 import { makeFacosStore } from './facos-store.mjs';
 import { ffmpegInfo, queueConvert, convertClip, readStoredZip, framesToMp4 } from './video-convert.mjs';
 import { facRoute, facListen } from './fac-api.mjs';
@@ -396,7 +396,9 @@ export async function startServer({ port = 8765, host = '127.0.0.1' } = {}) {
     if (url.pathname === '/api/mqtt/publish' && req.method === 'POST') {
       try {
         const body = JSON.parse(await readBody(req, 16 * 1024 * 1024));
-        return send(res, 200, { published: mqttPublish(Array.isArray(body?.messages) ? body.messages : []), status: mqttStatus(), facos: facos.status() });
+        // accepted: 브로커가 받아 발행했는가 — 화면의 UNS 사건 대기함(js/uns.js outbox)은 이것이 참일 때만 보낸 것으로 확정한다 (꺼져 있으면 FacOS 기록도 안 되므로 다시 보낸다)
+        const msgs = Array.isArray(body?.messages) ? body.messages : [], dup0 = mqttDedup.duplicates, published = mqttPublish(msgs), status = mqttStatus();
+        return send(res, 200, { published, duplicates: mqttDedup.duplicates - dup0, accepted: !!status.listening, status, facos: facos.status() });
       } catch (e) { return send(res, 400, { error: e.message }); }
     }
 

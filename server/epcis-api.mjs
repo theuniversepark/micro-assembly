@@ -5,6 +5,7 @@
 //   GET  /api/epcis/v1/events?…               EPCIS 질의 (MATCH_anyEPC · EQ_bizStep · EQ_action · EQ_readPoint · eventType · GE/LT_eventTime · EQ_mf:… · perPage · nextPageToken)
 //   GET  /api/epcis/v1/trace?epc=…            시리얼·SSCC 추적 사슬 (발행 → 적재 → 팔레트 묶음 → 출하 …)
 //   GET  /api/epcis/v1/shipment?truck=…       트럭 → 팔레트 SSCC → 시리얼 (리콜 범위)
+//   POST /api/epcis/v1/serial-reserve         제품 식별 번호 범위 예약 { ymd, need: { 'ser:DT': 40, pal: 10, ship: 6 } } → { ranges: { 'ser:DT': { from, to }, … } } (화면이 여럿이어도 겹치지 않음 · js/serialalloc.js)
 //   GET  /api/epcis/v1/status                 저장 건수 · 파일 · 외부 전송 상태
 //   GET/POST /api/epcis/v1/config             외부 저장소 전송 설정 { url, enabled, apiKey } — apiKey는 돌려주지 않는다(설정 여부만)
 //   POST /api/epcis/v1/forward/test           외부 저장소 연결 시험
@@ -127,6 +128,53 @@ export function makeEpcisApi({ dir, fetchImpl = globalThis.fetch, interval = 500
     try { const r = await fetchImpl(`${u}/events?perPage=1`, { headers: headers(false, key || (sameOrigin(u) ? cfg.apiKey : '')), signal: AbortSignal.timeout(8000) }); return r.ok ? { ok: true, status: r.status } : { ok: false, status: r.status, error: `HTTP ${r.status}` }; }
     catch (e) { return { ok: false, error: why(e) }; }
   }
+  // ── 제품 식별 번호 범위 예약 ─────────────────
+  // 화면(탭 · 앱 여러 개)이 각자 세면 같은 시리얼 · SSCC · 출하 ID를 낸다 — 여기서 범위를 떼어 주고 「어디까지 내줬는지」를 파일(serial-alloc.json)에 남긴다.
+  //   · 시작 번호 = max(파일에 남은 마지막 예약 번호, 저장소 이벤트에 실제로 쓰인 마지막 번호) + 1 → 앱을 다시 켜도 · 예약만 하고 이벤트를 못 올린 번호도 다시 나가지 않는다
+  //   · 같은 데이터 폴더를 쓰는 앱 서버가 둘이어도(맥 앱 두 개) 겹치지 않게 잠금 파일을 잡고 파일을 다시 읽은 뒤 쓴다 · 기록에 실패하면 범위를 주지 않는다(오류 응답 → 화면이 다시 요청)
+  const allocFile = path.join(dir, 'serial-alloc.json'), lockFile = `${allocFile}.lock`, digits = (v) => String(v ?? '').replace(/\D/g, '');
+  const scanned = new Map();   // ymd → 저장소 이벤트에 쓰인 마지막 번호 (한 번만 훑는다 — 그 뒤로 들어오는 이벤트는 여기서 예약한 범위 안의 번호)
+  function usedMax(ymdIn) {
+    const ymd = digits(ymdIn), base = {}, re = new RegExp(`\\.([A-Z]{2})-${ymd}-(\\d{6})$`);
+    for (const e of store.events) if (e.bizStep === 'commissioning') for (const x of e.epcList ?? []) { const m = re.exec(x); if (m) base[m[1]] = Math.max(base[m[1]] ?? 0, Number(m[2])); }
+    // 팔레트 SSCC 일련번호(날짜 없음 — 저장소 전체 최댓값) · 오늘 출하 ID(SHP-ymd-N) — 앱을 다시 켜도 같은 SSCC·출하 ID를 다시 쓰지 않는다
+    let pal = 0, ship = 0; const reS = new RegExp(`^SHP-${ymd}-(\\d+)$`);
+    for (const e of store.events) { if (/^\d{18}$/.test(e['mf:sscc'] ?? '')) pal = Math.max(pal, Number(e['mf:sscc'].slice(8, 17))); const m = reS.exec(e['mf:shipment'] ?? ''); if (m) ship = Math.max(ship, Number(m[1])); }
+    return { base, pal, ship };
+  }
+  async function locked(fn) {
+    for (let i = 0; ; i++) {
+      try { fs.closeSync(fs.openSync(lockFile, 'wx')); break; }
+      catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        try { if (Date.now() - fs.statSync(lockFile).mtimeMs > 5000) { fs.rmSync(lockFile, { force: true }); continue; } } catch { continue; }   // 잠근 채 죽은 서버가 남긴 잠금
+        if (i > 150) throw new Error('번호 예약 잠금을 얻지 못했습니다 (다른 앱 서버가 사용 중)');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }
+    try { return fn(); } finally { fs.rmSync(lockFile, { force: true }); }
+  }
+  async function reserve(b) {
+    const ymd = digits(b?.ymd), need = b?.need, bad = (m) => Object.assign(new Error(m), { code: 400 });
+    if (ymd.length !== 6) throw bad('ymd(YYMMDD)가 필요합니다');
+    if (!need || typeof need !== 'object' || !Object.keys(need).length) throw bad('need가 필요합니다');
+    for (const [k, n] of Object.entries(need)) if (!/^(ser:[A-Z]{2}|pal|ship)$/.test(k) || !Number.isInteger(n) || n < 1 || n > 1000) throw bad(`need 형식 오류 (${k})`);
+    if (!scanned.has(ymd)) { if (scanned.size > 3) scanned.clear(); scanned.set(ymd, usedMax(ymd)); }
+    const U = scanned.get(ymd);
+    return locked(() => {   // 잠근 동안은 동기 처리 — 읽기 → 계산 → 쓰기 사이에 다른 요청이 끼지 못한다
+      let A = { ser: {}, pal: 0, ship: {} };
+      if (fs.existsSync(allocFile)) { const j = JSON.parse(fs.readFileSync(allocFile, 'utf8')); A = { ser: j.ser ?? {}, pal: Number(j.pal) || 0, ship: j.ship ?? {} }; }   // 파일이 깨졌으면 던진다 — 어디까지 내줬는지 모르는 채로 주지 않는다
+      const ranges = {}, take = (hi, n, max) => { if (hi + n > max) throw Object.assign(new Error('번호가 다 찼습니다'), { code: 409 }); return { from: hi + 1, to: hi + n }; };
+      for (const [k, n] of Object.entries(need)) {
+        if (k === 'pal') { ranges[k] = take(Math.max(A.pal, U.pal), n, 999999999); A.pal = ranges[k].to; }
+        else if (k === 'ship') { ranges[k] = take(Math.max(Number(A.ship[ymd]) || 0, U.ship), n, 99999); A.ship[ymd] = ranges[k].to; }
+        else { const c = k.slice(4), S = (A.ser[ymd] ??= {}); ranges[k] = take(Math.max(Number(S[c]) || 0, U.base[c] ?? 0), n, 999999); S[c] = ranges[k].to; }
+      }
+      for (const o of [A.ser, A.ship]) for (const d of Object.keys(o).sort().slice(0, -7)) delete o[d];   // 지난 날짜 기록은 최근 7일만
+      const tmp = `${allocFile}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(A)); fs.renameSync(tmp, allocFile);
+      return { ymd, ranges };
+    });
+  }
   const status = () => ({ events: store.count, file: fs.existsSync(file) ? fs.statSync(file).size : 0, stats: store.stats, recovery, writeError,
     forward: { url: cfg.url, enabled: !!cfg.enabled, apiKey: !!cfg.apiKey, pending: pending().length, sent: fw.sent, failed: fw.failed, lastOk: fw.lastOk, lastError: fw.lastError, lastJob: fw.lastJob, processing: fw.job ? { since: new Date(fw.job.at).toISOString(), events: fw.job.n } : null, batch: fw.batch, rejected: fw.rejected ?? 0, nextRetryMs: fw.nextAt ? Math.max(0, fw.nextAt - Date.now()) : 0 } });
 
@@ -140,14 +188,11 @@ export function makeEpcisApi({ dir, fetchImpl = globalThis.fetch, interval = 500
     if (p.startsWith('capture/') && method === 'GET') { const j = store.get(p.slice(8)); return j ? { code: 200, body: j } : { code: 404, body: { error: '없는 캡처 작업' } }; }
     if (p === 'events' && method === 'GET') return { code: 200, body: store.query(query) };
     if (p === 'trace' && method === 'GET') { const id = query.get('epc'); return id ? { code: 200, body: { epc: id, events: store.trace(id) } } : { code: 400, body: { error: 'epc가 필요합니다' } }; }
-    // 시리얼 발행 이어 받기: 오늘(ymd) 이미 저장소에 있는 제품코드별 마지막 번호 — 앱을 다시 켜도 같은 시리얼을 다시 쓰지 않는다
-    if (p === 'serial-base' && method === 'GET') {
-      const ymd = query.get('ymd') ?? '', base = {}, re = new RegExp(`\\.([A-Z]{2})-${ymd.replace(/\D/g, '')}-(\\d{6})$`);
-      for (const e of store.events) if (e.bizStep === 'commissioning') for (const x of e.epcList ?? []) { const m = re.exec(x); if (m) base[m[1]] = Math.max(base[m[1]] ?? 0, Number(m[2])); }
-      // 팔레트 SSCC 일련번호(날짜 없음 — 저장소 전체 최댓값) · 오늘 출하 ID(SHP-ymd-N) — 앱을 다시 켜도 같은 SSCC·출하 ID를 다시 쓰지 않는다
-      let pal = 0, ship = 0; const reS = new RegExp(`^SHP-${ymd.replace(/\D/g, '')}-(\\d+)$`);
-      for (const e of store.events) { if (/^\d{18}$/.test(e['mf:sscc'] ?? '')) pal = Math.max(pal, Number(e['mf:sscc'].slice(8, 17))); const m = reS.exec(e['mf:shipment'] ?? ''); if (m) ship = Math.max(ship, Number(m[1])); }
-      return { code: 200, body: { ymd, base, pal, ship } };
+    // 시리얼 발행 이어 받기: 오늘(ymd) 이미 저장소에 있는 제품코드별 마지막 번호 (조회만 — 번호를 받아 쓰려면 아래 serial-reserve)
+    if (p === 'serial-base' && method === 'GET') { const ymd = query.get('ymd') ?? ''; return { code: 200, body: { ymd, ...usedMax(ymd) } }; }
+    if (p === 'serial-reserve' && method === 'POST') {
+      let b; try { b = JSON.parse(bodyText || '{}'); } catch { return { code: 400, body: { error: 'JSON이 아닙니다' } }; }
+      try { return { code: 200, body: await reserve(b) }; } catch (e) { return { code: e.code ?? 503, body: { error: e.message } }; }
     }
     if (p === 'shipment' && method === 'GET') { const t = query.get('id') ?? query.get('truck'); return t ? { code: 200, body: store.shipmentOf(t) } : { code: 400, body: { error: 'id(출하 ID)가 필요합니다' } }; }   // truck= 은 예전 기록(트럭 이름 = 출하 ID)
     if (p === 'config') {
