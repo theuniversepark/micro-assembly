@@ -70,7 +70,7 @@ app.whenReady().then(async () => { try {
     Audio.prototype.play = () => Promise.reject(new Error('NotAllowedError')); const said = []; S.speak = (u) => { said.push(u.text); setTimeout(() => u.onerror?.({ error: 'not-allowed' }), 10); };
     t.go(1); const rec = !!t.audio; await new Promise((r) => setTimeout(r, 120)); const a = { rec, speaking: !!t.speaking, onSpoken: !!t.onSpoken, timer: !!t.autoT, said: said.length, step: t.step };
     await new Promise((r) => setTimeout(r, 1600)); const b = { step: t.step }; Audio.prototype.play = play; delete S.speak; if (S.speak !== sp) S.speak = sp; t.close(); t.voice = false; return { a, b }; })()`);
-  check('녹음 play() 거부 → 같은 문장을 OS 음성으로 → 그것도 실패하면 읽는 시간 타이머', r08.a.rec && r08.a.said === 1 && !r08.a.speaking && !r08.a.onSpoken && r08.a.timer, JSON.stringify(r08.a));
+  check('녹음 play() 거부 → 같은 문장을 남성 OS 음성으로(없으면 읽지 않음) → 그것도 실패하면 읽는 시간 타이머', r08.a.rec && r08.a.said <= 1 && !r08.a.speaking && !r08.a.onSpoken && r08.a.timer, JSON.stringify(r08.a));
   check('…영영 기다리지 않고 다음 단계로', r08.b.step === 2, JSON.stringify(r08.b));
 
   console.log('== ③ 안내 중 단계 변경 · 리셋 (R06)');

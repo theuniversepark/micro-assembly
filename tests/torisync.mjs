@@ -28,7 +28,8 @@ globalThis.Audio = class { constructor(src) { this.src = src; A.made.push(this);
   play() { if (A.mode === 'reject') return Promise.reject(new Error('NotAllowedError')); if (A.mode === 'error') { setTimeout(() => this.onerror?.(), 10); return new Promise(() => {}); }
     if (A.mode === 'play') { this.onplay?.(); this.t = setTimeout(() => this.onended?.(), A.ms); } return Promise.resolve(); } };
 const S = { mode: 'none', said: [] };   // none: 음성 합성 없음 · ok: 20ms 뒤 시작 · 100ms 뒤 끝 · error: 오류 · mute: 시작도 끝도 알리지 않음
-const synth = { cancel() {}, getVoices: () => [], speak(u) { S.said.push(u.text); if (S.mode === 'ok') { setTimeout(() => u.onstart?.(), 20); setTimeout(() => u.onend?.(), 100); } else if (S.mode === 'error') setTimeout(() => u.onerror?.({ error: 'not-allowed' }), 10); } };
+const MALE = [{ name: 'Microsoft InJoon Online (Natural)', lang: 'ko-KR' }, { name: 'Microsoft Andrew Online (Natural)', lang: 'en-US' }], FEMALE = [{ name: 'Yuna', lang: 'ko-KR' }, { name: 'Microsoft Heami', lang: 'ko-KR' }, { name: 'Samantha', lang: 'en-US' }, { name: 'Google US English', lang: 'en-US' }];
+const synth = { cancel() {}, voices: MALE, getVoices: () => synth.voices, speak(u) { S.said.push(u.text); if (S.mode === 'ok') { setTimeout(() => u.onstart?.(), 20); setTimeout(() => u.onend?.(), 100); } else if (S.mode === 'error') setTimeout(() => u.onerror?.({ error: 'not-allowed' }), 10); } };
 globalThis.SpeechSynthesisUtterance = class { constructor(t) { this.text = t; } };
 const setSynth = (m) => { S.mode = m; S.said.length = 0; window.speechSynthesis = m === 'none' ? { cancel() {} } : synth; };
 
@@ -175,6 +176,18 @@ const rec = (t, i, L = 'ko') => { const s = t.steps()[i], x = (L === 'en' && s.e
   check('녹음 play() 거부 (autoplay 차단): 같은 문장을 OS 음성으로', S.said.length === 1 && S.said[0] === speakText(t.steps()[1].say), `${S.said.length}건`);
   await wait(100 + 1000 + 300); t.cancelAuto();
   check('…OS 음성이 끝난 뒤 다음 단계로', t.step === 2, `step=${t.step}`); t.close();
+}
+{
+  A.mode = 'reject'; setSynth('ok'); synth.voices = FEMALE; const { t } = await voiced(); rec(t, 1); S.said.length = 0; t.go(1); await wait(60);
+  check('남성 OS 음성이 없으면(유나 · Heami뿐) 여성 음성으로 읽지 않고 읽는 시간 타이머', S.said.length === 0 && t.speaking === false && !t.onSpoken && !!t.autoT, `${S.said.length}건`);
+  t.setLang('en'); S.said.length = 0; t.go(1); await wait(60);
+  check('…영어도 남성 음성이 없으면 읽지 않음', S.said.length === 0, `${S.said.length}건`); t.setLang('ko'); t.cancelAuto(); t.close(); synth.voices = MALE;
+}
+{
+  const f0 = globalThis.fetch, { MENU_SAY } = await import('../js/tori.js'); globalThis.fetch = () => new Promise((r) => setTimeout(() => r({ ok: true, json: async () => [voiceKey(MENU_SAY)] }), 40));   // 목록이 늦게 옴
+  A.mode = 'play'; A.ms = 50; setSynth('ok'); const W = world(), t = W.tori; await wait(1); globalThis.fetch = f0; t.voice = true; A.made.length = 0; S.said.length = 0;
+  t.menu(); const early = A.made.length + S.said.length; await wait(120);
+  check('녹음 목록을 읽기 전에 말하면 OS 음성으로 넘기지 않고 목록을 기다렸다가 녹음을 튼다', early === 0 && A.made.length === 1 && S.said.length === 0, `early=${early} 녹음=${A.made.length} os=${S.said.length}`); t.cancelAuto(); t.close();
 }
 {
   A.mode = 'error'; setSynth('none'); const { t } = await voiced(); rec(t, 1); t.go(1); await wait(200 + 1000 + 400); t.cancelAuto();

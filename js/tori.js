@@ -8,7 +8,7 @@
 //   「이전」으로 돌아온 단계도 순방향과 같은 창 · 카메라 · 상위망 상태로 맞춘다 (이벤트를 만드는 동작만 다시 하지 않는다)
 // 그리기: 토리 전용 캔버스를 WebGPU(three/webgpu WebGPURenderer)로 — 메인 3D 화면(WebGL)과 따로라 공장 화면 속도와 무관
 //   WebGPU를 쓸 수 없는 브라우저 · 공유 아티팩트에서는 같은 장면을 WebGL로 그린다 (모양 · 동작 같음)
-// 말: 말풍선 글자와 브라우저 내장 한국어 음성(speechSynthesis — 설치 · 비용 없음)을 함께 · 🔊로 음성만 끌 수 있음
+// 말: 말풍선 글자와 녹음한 남성 음성을 함께 (녹음 없는 문장은 남성 OS 음성이 있을 때만 speechSynthesis로) · 🔊로 음성만 끌 수 있음
 // 언어: 기본 한국어 · 머리의 EN 버튼으로 영어 안내(js/tori-en.js — 말풍선 · 녹음 · 단추 · 그림 글자) · 고른 언어는 기억
 //   브라우저는 사용자가 화면을 누르기 전에는 소리를 막으므로, 그 전에 나온 말은 첫 클릭 때 읽는다 (앱은 처음부터 — electron/main.mjs autoplayPolicy)
 // micro-assembly(정밀조립Zone 하나): 상위 meta-factory 대본에서 유연생산 · 적응가공 · 정밀검사 Zone 단계는 뺐고, 샘플 검사는 검사·포장셀 최종 검사대의 출하 전 샘플 재검(js/serial.js)으로,
@@ -240,12 +240,12 @@ const TOPICS = {
         warn: '현장입니다. 방금 로봇 카메라 앞에 문제가 생겼어요. 노란 표지와 빛기둥이 보이죠? 주의 단계라 노란색이에요. 아직 아무도 모르는 상태예요.' },
       say: (T) => T.ev ? `현장 — 방금 「${T.ev.label}」 상황이 생겼어요 (우선순위 P${prioOf(T.ev)} · 위험 반경 ${RADIUS[T.ev.type] ?? 1.2}m). ${evColor(T)} 표지와 빛기둥이 보이죠? ${sevK(T) === 'alarm' ? '경보(빨강)' : '주의(노랑)'} 단계예요. 아직 아무도 모르는 상태예요.` : '지금은 현장 이벤트를 만들 수 없어요. 피지컬AI 단계에서 ⚠ 현장 이벤트 버튼으로 다시 해 보세요.' },
     { act: (T) => { if (T.ev?.quiet) { T.ev.quiet = false; T.ev.tq = T.h.sim?.()?.time; } }, hold: (T) => !!T.ev?.detected, live: true, ready: (T) => !T.ev || T.ev.detected || T.ev.cleared,
-      wait: '아직 감지되지 않았어요 — 감지되면 바로 넘어갈게요.',   // 감지 전에 「다음」을 눌렀을 때 (녹음 없음 — OS 음성)
+      wait: '아직 감지되지 않았어요 — 감지되면 바로 넘어갈게요.',   // 감지 전에 「다음」을 눌렀을 때
       voice: '주변을 지나는 로봇의 카메라 영상을 AI가 계속 추론하고 있어요. 이상한 물체나 사람이 보이면 바로 감지해요.',
       say: (T) => `AI 감지 — 주변을 지나는 로봇 카메라 영상을 AI가 계속 추론하고 있어요. ${!T.ev ? '' : T.ev.detected ? `${ga(T.ev.detectedBy)} 감지했어요!` : `지금 찾는 중이에요… (${sec((T.h.sim?.()?.time ?? T.ev.t0) - T.ev.t0)} 경과)`}` },
     { cam: (T) => { const p = T.ev && T.h.moverPos?.(T.ev.detectedBy); return p ? { x: p.x, z: p.z, d: 8 } : T.ev && { x: T.ev.x, z: T.ev.z, d: 9 }; },
       panel: (T) => T.ev?.detectedBy && byRobot(T) === 'robot' && { kind: 'robot', id: T.ev.detectedBy }, hold: (T) => !!T.ev?.detected,   // 감지한 그 순간의 카메라 화면을 보여 준다 — 감지되지 않은 현장은 멈추지 않는다
-      vok: (T) => !!T.ev?.detected, vk: byRobot, voice: {   // 감지 전이면 「감지했어요」 녹음 대신 말풍선 글을 읽는다
+      vok: (T) => !!T.ev?.detected, vno: '아직 감지되지 않았어요. 조금 더 기다려 볼게요.', vk: byRobot, voice: {   // 감지 전이면 「감지했어요」 녹음 대신 vno 녹음
         robot: '이 로봇이 감지했어요. 잠시 뒤 열리는 로봇 정보 창에서 그 로봇의 카메라 영상과 AI 검출 상자를 볼 수 있어요. 감지하자마자 셀은 스스로 감속하고 우회해요.',
         cctv: '이번에는 CCTV 영상 AI가 먼저 감지했어요. 감지하자마자 셀은 스스로 감속하고, 주변 로봇은 그 구역을 우회해요.' },
       say: (T) => !T.ev?.detected ? '아직 감지되지 않았어요. 조금 더 기다려 볼게요.' : byRobot(T) === 'cctv' ? `${ga(T.ev.detectedBy)} ${took(T)} 감지했어요 (신뢰도 ${Math.round((T.ev.conf ?? 0) * 100)}%). 감지 즉시 셀 자체 조치 — ${T.ev.type === 'intrusion' ? '주변 로봇 협동 감속 · 접근 금지 구역 표시' : '주변 로봇 감속 · 우회 · 구역 표시'}. (설명하는 동안 현장은 잠시 멈춰 둘게요)` : `${ga(T.ev.detectedBy)} ${took(T)} 감지했어요 (신뢰도 ${Math.round((T.ev.conf ?? 0) * 100)}%). 잠시 뒤 열리는 로봇 정보 창에 그 카메라 영상과 AI 검출 상자가 보여요. 감지 즉시 셀 자체 조치 — ${T.ev.type === 'intrusion' ? '주변 로봇 협동 감속 · 접근 금지 구역 표시' : '감지 로봇 감속 · 우회 · 구역 표시'}.${T.held ? ' (설명하는 동안 현장은 잠시 멈춰 둘게요)' : ''}` },
@@ -434,10 +434,10 @@ const TOPICS = {
       say: '끝으로, 우리가 만들어 갈 미래의 공장을 이야기해 볼게요. 피지컬AI 실증 메타팩토리의 목표는, 레거시 공장이 자동화를 거쳐 AI가 보고 판단하고 로봇이 직접 해결하는 자율공장으로 가는 길을 디지털 트윈에서 먼저 실증하고, 그 성과를 실제 제조 현장으로 넓히는 거예요. 멈추지 않는 공장, 스스로 좋아지는 공장, 사람이 더 안전하고 가치 있게 일하는 공장 — 모두의 AI 팩토리, 함께 만들어 가요. 지금까지 공장장 토리였습니다. 감사합니다!' },
   ] },
 };
-// 녹음이 없는 문장(실시간 수치 등)만 OS 음성으로 읽는다 — 한국어 원어민 음성을 먼저 (Edge InJoon 남성 · 맥 지안 · 유나 · 윈도우 Heami)
-// 맥의 Eddy · Reed · Rocko 같은 다국어 공용 음성은 외국인 억양이라 쓰지 않는다
-const MALE_KO = [/injoon/i, /hyunsu/i, /지안|jian/i, /유나|yuna/i, /heami/i, /sunhi/i];
-const koVoice = (all) => { const ko = all.filter((v) => /^ko/i.test(v.lang)); for (const re of MALE_KO) { const v = ko.find((x) => re.test(x.name)); if (v) return v; } return ko.find((v) => !/eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley/i.test(v.name)) ?? ko[0] ?? null; };
+// 녹음이 없는 문장(실시간 수치 등)만 OS 음성으로 읽는다 — 토리는 남성 목소리라 남성 한국어 음성이 있을 때만 (Edge InJoon · Hyunsu 등)
+// 맥 유나 · 윈도우 Heami 같은 여성 음성밖에 없으면 목소리가 바뀌지 않게 소리 없이 말풍선만 보여 준다 (맥의 Eddy · Reed · Rocko 같은 다국어 공용 음성은 외국인 억양이라 쓰지 않는다)
+const MALE_KO = [/injoon/i, /hyunsu/i, /bongjin/i, /gookmin/i];
+export const koVoice = (all) => { const ko = all.filter((v) => /^ko/i.test(v.lang)); for (const re of MALE_KO) { const v = ko.find((x) => re.test(x.name)); if (v) return v; } return null; };
 // 영어 안내: 주제별 같은 번호 단계에 en(say · voice)을 붙인다 — 단계 수가 다르면 그 주제는 한국어로 (tests/toriEn.mjs)
 for (const [k, T] of Object.entries(TOPICS)) { const E = EN[k]; T.en = E?.name; if (E?.steps?.length === T.steps.length) T.steps.forEach((st, i) => { st.en = E.steps[i]; }); else if (E) console.warn(`[토리] 영어 안내 단계 수 다름: ${k}`); }
 // 데이터 폐루프와 플라이휠은 하나의 주제로 이어서 설명한다 (폐루프 마지막 단계가 플라이휠로 넘어가는 다리)
@@ -500,7 +500,8 @@ export const speakText = (t, lang = 'ko') => {
 };
 export const voiceKey = (t, lang = 'ko') => { let h = 0x811c9dc5; for (const c of speakText(t, lang)) { h ^= c.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
 // 녹음할 문장 전체: 고정 문장은 말풍선 그대로, 실시간 수치가 들어가는 단계는 voice(수치 없는 읽을 글)
-export function narration(lang = 'ko') { const en = lang === 'en'; return [en ? EN_UI.menu : MENU_SAY, ...Object.values(TOPICS).flatMap((T) => T.steps.map((s) => (en ? s.en : s)).filter(Boolean).flatMap((s) => (s.voice && typeof s.voice === 'object' ? Object.values(s.voice) : [s.voice ?? (typeof s.say === 'string' ? s.say : null)])).filter(Boolean))]; }   // 상황별 음성(voice: { 종류: 문장 } · vk가 고름)은 모두 녹음
+export function narration(lang = 'ko') { const en = lang === 'en', U = en ? EN_UI : KO_UI; return [en ? EN_UI.menu : MENU_SAY, U.wait, U.timeout, U.stopped,   // 기다림 · 시간 초과 · 멈춤 안내도 녹음 (OS 음성으로 넘어가면 목소리가 바뀜)
+  ...Object.values(TOPICS).flatMap((T) => T.steps.map((s) => (en ? s.en : s)).filter(Boolean).flatMap((s) => [...(s.voice && typeof s.voice === 'object' ? Object.values(s.voice) : [s.voice ?? (typeof s.say === 'string' ? s.say : null)]), s.wait, s.timeout, s.vno]).filter(Boolean))]; }   // 상황별 음성(voice: { 종류: 문장 } · vk가 고름)은 모두 녹음
 const VOICE_DIR = new URL('../assets/tori/voice/', import.meta.url).href, voiceDir = (lang) => (lang === 'en' ? `${VOICE_DIR}en/` : VOICE_DIR);   // 영어 녹음은 voice/en/
 const AUTO_MS = 1000, LOOP_MS = 5000, READY_MAX_MS = 90000, PANEL_MS = 3000, VOICE_START_MS = 5000;   // 현장을 보여 준 뒤 창을 열기까지 · OS 음성이 이 안에 시작하지 않으면 읽는 시간으로
 const readyMax = () => globalThis.__toriReadyMax ?? READY_MAX_MS, panelMs = () => (globalThis.__toriFast ? 300 : PANEL_MS), voiceStartMs = () => (globalThis.__toriFast ? 400 : VOICE_START_MS);   // 시험 훅: 기다리는 한도 · 창 여는 시간 · 음성 시작 한도를 줄인다
@@ -509,15 +510,15 @@ const readMs = (t, lang) => (globalThis.__toriFast ? 200 : 1500 + speakText(t, l
 const H = { incUns, UNS_CMD, unsSel, qSample, LINK_UNS, fos, fosOrder, clock, adv, lossTop, inc, arrived, escortGap, byRobot, sevK, ex, qx, prioOf, RADIUS };   // 영어 안내(js/tori-en.js)가 쓰는 공장 상태 도우미
 const KO_UI = { bubble: '토리 안내', name: '토리', voice: '음성으로 읽기', close: '접기', avatar: '토리 — 눌러서 안내 주제 고르기', gpu: '토리를 그리는 방식',
   prev: '◀ 이전', next: '다음 ▶', topics: '주제', finish: '마치기', later: '다음에', start: '둘러보기 시작 ▶', lang: 'English guide', langBtn: 'EN',
-  // 실시간 안내 문장 (녹음 없음 — OS 음성): 준비 전 「다음」 · 대기 시간 초과 · 공장이 새로 시작됨
+  // 안내 문장 (녹음함 — narration()): 준비 전 「다음」 · 대기 시간 초과 · 공장이 새로 시작됨
   wait: '아직 준비되지 않았어요 — 준비되면 바로 넘어갈게요.', timeout: '기다리던 일이 대기 시간 안에 일어나지 않았어요. 이 예시는 여기서 멈추고 다음 주제로 넘어갈게요 — 「다시 기다리기」를 누르면 더 기다려요.', retry: '다시 기다리기 ↻',
   stopped: '공장이 새로 시작돼서 하던 안내를 멈췄어요. 이어서 볼 주제를 골라 주세요.' };
 // 공장(시뮬레이션)을 보는 단계인지 — 아니면 공장이 새로 시작돼도 예약된 것이 옛 공장을 가리키지 않는다
 const simBound = (s) => !!(s.act || s.live || s.hold || s.ready || s.follow || s.camF || s.panel || s.net || typeof s.cam === 'function' || typeof s.say === 'function');
 const CTX = ['ev', 'qInj', 'guard', 'netOff', 'flushed', 'prop', 'applied', 'bot', 'exWip', 'exSer', 'exPal', 'exShip'];   // 단계 동작이 공장에서 얻어 둔 것 (그 실행에서만 유효)
 const CHAINS = { chain: CHAIN, qchain: QCHAIN, fchain: FCHAIN, kchain: KCHAIN, lchain: LCHAIN, ochain: OCHAIN }, CHAIN_EN = { chain: 'CHAIN', qchain: 'QCHAIN', fchain: 'FCHAIN', kchain: 'KCHAIN', lchain: 'LCHAIN', ochain: 'OCHAIN' };
-const EN_VOICE = [/andrew/i, /guy/i, /christopher/i, /daniel/i, /aaron/i, /alex/i, /google us english/i];
-const enVoice = (all) => { const en = all.filter((v) => /^en/i.test(v.lang)); for (const re of EN_VOICE) { const v = en.find((x) => re.test(x.name)); if (v) return v; } return en.find((v) => /^en-US/i.test(v.lang)) ?? en[0] ?? null; };
+const EN_VOICE = [/andrew/i, /\bguy\b/i, /christopher/i, /daniel/i, /aaron/i, /\balex\b/i, /\bfred\b/i, /\btom\b/i, /\bevan\b/i, /nathan/i, /google uk english male/i];   // 남성 음성만 — 없으면 소리 없이
+export const enVoice = (all) => { const en = all.filter((v) => /^en/i.test(v.lang)); for (const re of EN_VOICE) { const v = en.find((x) => re.test(x.name)); if (v) return v; } return null; };
 
 export class Tori {
   // hooks: flyTo(viewKey) · setMode(modeKey) · mode() 지금 단계
@@ -551,7 +552,8 @@ export class Tori {
     });
     this.syncVoice(); this.syncLang();
     this.recorded = {};   // 언어별 녹음된 문장 목록
-    for (const L of ['ko', 'en']) fetch(`${voiceDir(L)}index.json`).then((r) => (r.ok ? r.json() : [])).then((k) => { this.recorded[L] = new Set(k); }).catch(() => { this.recorded[L] = new Set(); });
+    this.recLoad = {};   // 목록을 읽는 중 — 다 읽기 전에 말하면 녹음이 없는 줄 알고 OS 음성으로 넘어가므로 speak가 기다린다
+    for (const L of ['ko', 'en']) this.recLoad[L] = Promise.resolve().then(() => fetch(`${voiceDir(L)}index.json`)).then((r) => (r.ok ? r.json() : [])).then((k) => { this.recorded[L] ??= new Set(k); }).catch(() => { this.recorded[L] ??= new Set(); });
     this.initGfx().catch((e) => console.warn('[토리] 그리기 시작 실패', e));
   }
   // ── 언어 ─────────────────
@@ -677,7 +679,7 @@ export class Tori {
     const last = s.end || i === S.length - 1, nx = this.nextTopic(s), nextLabel = this.timedOut ? u.retry : s.start ? u.start : nx ? `${this.tname(nx)} ▶` : last ? u.finish : u.next;
     this.btnEl.innerHTML = `${i ? `<button type="button" data-t="prev">${u.prev}</button>` : ''}${i === 0 && this.topic === 'tour' ? `<button type="button" data-t="skip">${u.later}</button>` : ''}<button type="button" data-t="menu">${u.topics}</button><button type="button" data-t="next" class="primary">${nextLabel}</button>`;
     const v = L.voice && typeof L.voice === 'object' ? L.voice[s.vk(this)] : L.voice;
-    if (quiet) this.sayEl.textContent = this.text(s); else this.say(this.text(s), this.noteK ? this.noteText(s) : s.vok && !s.vok(this) ? undefined : v);   // vok: 녹음 문장이 지금 현장과 맞을 때만 녹음을 쓴다 (아니면 말풍선 글을 OS 음성으로)
+    if (quiet) this.sayEl.textContent = this.text(s); else this.say(this.text(s), this.noteK ? this.noteText(s) : s.vok && !s.vok(this) ? L.vno : v);   // vok: 녹음 문장이 지금 현장과 맞을 때만 그 녹음을 쓴다 (아니면 vno 녹음)
     if (s.live || s.ready) this.liveT = setInterval(() => {   // 진행 상황을 1초마다 다시 읽음 (소리는 처음 한 번) · 기다리던 일이 일어나면 기다림 안내를 지우고, 시간 초과 뒤였으면 이어서 진행
       if (g !== this.gen) return;
       if (this.noteK && this.canLeave(s)) { const was = this.timedOut; this.noteK = null; this.timedOut = false; if (was) { this.paint(s, i, true); return this.scheduleAuto(s, i === S.length - 1); } }
@@ -742,6 +744,9 @@ export class Tori {
     }
     this.pending = null;
     const L = this.lang, key = voiceKey(text, L);
+    if (!this.recorded[L] && this.recLoad?.[L]) {   // 녹음 목록을 아직 못 읽음(시작 직후) — 읽은 뒤에 말한다 (그 사이 다른 말로 넘어갔으면 버림)
+      const tok = this.spkTok = {}; this.recLoad[L].then(() => { if (this.spkTok === tok && this.recorded[L]) this.speak(text); }); return;
+    }
     if (this.recorded[L]?.has(key)) {   // 녹음 (자연스러운 남성 음성 · 한국어 InJoon / 영어 Andrew)
       const a = this.audio = new Audio(`${voiceDir(L)}${key}.mp3`);
       this.speaking = true; this.armAuto();   // 실제 재생을 시작했으니 읽는 시간으로 걸어 둔 자동 넘김은 음성 끝 기준으로
@@ -755,15 +760,15 @@ export class Tori {
   }
   speakOS(text, L) {   // 녹음이 없으면 OS 음성 (그 언어)
     const S = window.speechSynthesis; if (!S?.speak || typeof SpeechSynthesisUtterance === 'undefined') return this.voiceFail();
-    const u = new SpeechSynthesisUtterance(speakText(text, L)); u.lang = L === 'en' ? 'en-US' : 'ko-KR'; u.rate = 1.05;
-    u.voice = (L === 'en' ? enVoice : koVoice)(S.getVoices());
+    const v = (L === 'en' ? enVoice : koVoice)(S.getVoices?.() ?? []); if (!v) return this.voiceFail();   // 남성 음성이 없으면 읽지 않는다 — 여성 음성으로 바뀌어 들리지 않게 (말풍선 + 읽는 시간)
+    const u = new SpeechSynthesisUtterance(speakText(text, L)); u.lang = L === 'en' ? 'en-US' : 'ko-KR'; u.rate = 1.05; u.voice = v;
     this.speaking = true; this.armAuto(); let started = false;
     const fail = () => { if (this.utter !== u) return; this.utter = null; this.voiceFail(); };
     u.onstart = () => { if (this.utter === u) { started = true; this.talkT = 60; } }; u.onend = () => { if (this.utter === u) this.spoken(); }; u.onerror = fail;
     this.utter = u; try { S.speak(u); } catch { return fail(); }
     clearTimeout(this.voiceT); this.voiceT = setTimeout(() => { if (this.utter === u && !started) { S.cancel(); fail(); } }, voiceStartMs());   // 막혀서 시작도 끝도 알리지 않는 경우 (첫 클릭 전 등)
   }
-  stopVoice() { this.speaking = false; this.utter = null; clearTimeout(this.voiceT); window.speechSynthesis?.cancel(); if (this.audio) { this.audio.pause(); this.audio = null; } }
+  stopVoice() { this.speaking = false; this.utter = null; this.spkTok = null; clearTimeout(this.voiceT); window.speechSynthesis?.cancel(); if (this.audio) { this.audio.pause(); this.audio = null; } }
 
   // ── 아바타 (공장장 그림 애니메이션) ─────────────────
   // 투명 배경 PNG(assets/tori/manager.png)를 격자 판에 붙이고, 판의 꼭짓점을 매 프레임 조금씩 옮겨 움직임을 만든다:
